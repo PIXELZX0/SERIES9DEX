@@ -30,9 +30,28 @@ forge snapshot --check   # .gas-snapshot 대조
 ## 배포
 
 ```bash
+export PRIVATE_KEY=<PRIVATE_KEY>
+export SAFE_ADDRESS=<SAFE_MULTISIG_ADDRESS>   # 배포 후 최종 owner
+
 forge script script/DeployDex.s.sol:DeployDex \
-  --rpc-url "$MONAD_RPC_URL" --private-key "$PRIVATE_KEY" --broadcast
+  --rpc-url "$MONAD_RPC_URL" --broadcast
 ```
+
+배포 스크립트는 ProtocolTreasury/DexRegistry 프록시와 Orderbook + 팩토리를 배포하고,
+레지스트리에 연결한 뒤 소유권을 Safe로 이관합니다.
+
+## GitHub Actions
+
+| 워크플로 | 트리거 | 하는 일 |
+|---|---|---|
+| `.github/workflows/ci.yml` | push(main) / PR | `forge build` + `forge test` + gas snapshot 대조 |
+| `.github/workflows/release-monad-mainnet-deploy.yml` | release published / 수동 | DEX 스택 배포 + Sourcify/SocialScan 검증 + 주소 JSON/ABI 릴리즈 첨부 |
+
+필수 GitHub Secrets: `MONAD_RPC_URL`, `PRIVATE_KEY`, `SAFE_ADDRESS`
+선택 GitHub Variables: `SKIP_VERIFY` (`true`/`false`, 기본 `false`)
+
+> 릴리즈 워크플로는 **스택 전체를 새로 배포**합니다. 업그레이드가 아니라 신규 배포이므로
+> 이미 운영 중인 배포가 있으면 릴리즈를 발행하기 전에 의도한 동작인지 확인하세요.
 
 ## 관련 레포
 
