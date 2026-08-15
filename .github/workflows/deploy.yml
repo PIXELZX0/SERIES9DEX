@@ -184,8 +184,8 @@ jobs:
       - name: Verify contracts
         env:
           ADDRESSES: ${{ steps.deploy.outputs.addresses }}
+          # Sourcify is Monad's verification path; both explorers read from it.
           SOURCIFY_VERIFIER_URL: https://sourcify-api-monad.blockvision.org
-          SOCIALSCAN_VERIFIER_URL: https://api.socialscan.io/monad/v1/explorer/command_api/contract
         shell: bash
         run: |
           set -euo pipefail
@@ -215,11 +215,6 @@ jobs:
               --chain "$CHAIN_ID" --rpc-url "$RPC_URL" "${extra[@]}" \
               --verifier sourcify --verifier-url "$SOURCIFY_VERIFIER_URL" \
               || echo "::warning title=Sourcify verification failed::${path} (${addr})"
-
-            forge verify-contract "$addr" "$path" \
-              --chain "$CHAIN_ID" --rpc-url "$RPC_URL" "${extra[@]}" \
-              --verifier blockscout --verifier-url "$SOCIALSCAN_VERIFIER_URL" \
-              || echo "::warning title=SocialScan verification failed::${path} (${addr})"
           }
 
           verify "$TREASURY_IMPL" "src/ProtocolTreasury.sol:ProtocolTreasury"
@@ -234,6 +229,18 @@ jobs:
           verify "$REGISTRY" "$PROXY_PATH" \
             "$(cast abi-encode 'constructor(address,bytes)' "$REGISTRY_IMPL" \
                "$(cast calldata 'initialize(address,address)' "$DEPLOYER" "$TREASURY")")"
+
+          # A successful submission is not a match. Read back what Sourcify
+          # actually stored.
+          echo "--- Sourcify status ---"
+          for addr in $(jq -r 'to_entries[] | select(.key | test("Impl|Proxy|orderbook|Factory")) | .value' "$ADDRESSES"); do
+            STATUS="$(curl -sf "${SOURCIFY_VERIFIER_URL}/v2/contract/${CHAIN_ID}/${addr}" | jq -r '.match // "none"')"
+            if [[ "$STATUS" == "match" || "$STATUS" == "exact_match" ]]; then
+              echo "OK  ${addr}: ${STATUS}"
+            else
+              echo "::warning title=Not verified on Sourcify::${addr} (status: ${STATUS})"
+            fi
+          done
 
       - name: Upload workflow artifacts
         if: ${{ always() && steps.deploy.outputs.run_file != '' }}
