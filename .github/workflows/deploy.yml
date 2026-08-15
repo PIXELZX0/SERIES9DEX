@@ -100,6 +100,15 @@ jobs:
             exit 1
           fi
 
+          # Ownership transfer to the Safe is permanent. If nothing is deployed
+          # at that address, the protocol is owned by nobody.
+          SAFE_CODE="$(cast code "$SAFE_ADDRESS" --rpc-url "$RPC_URL")"
+          if [[ "$SAFE_CODE" == "0x" || -z "$SAFE_CODE" ]]; then
+            echo "No contract deployed at SAFE_ADDRESS ${SAFE_ADDRESS} on ${NETWORK}." >&2
+            echo "Deploy the Safe first: ownership transfer is irreversible." >&2
+            exit 1
+          fi
+
           echo "deployer=$DEPLOYER" >> "$GITHUB_OUTPUT"
 
       - name: Resolve artifact names
