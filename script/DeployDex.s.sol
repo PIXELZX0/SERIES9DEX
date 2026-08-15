@@ -77,5 +77,47 @@ contract DeployDex is Script {
         console.log("Orderbook:", address(orderbook));
         console.log("SpotPoolFactory:", address(spotPoolFactory));
         console.log("PerpPoolFactory:", address(perpPoolFactory));
+
+        // Labeled record for CI: verification and post-deploy assertions need to
+        // know which proxy is which, and the broadcast file only says
+        // "ERC1967Proxy" twice.
+        _writeDeploymentJson(
+            deployer,
+            safeAddress,
+            address(treasuryImplementation),
+            address(treasury),
+            address(registryImplementation),
+            address(registry),
+            address(orderbook),
+            address(spotPoolFactory),
+            address(perpPoolFactory)
+        );
+    }
+
+    function _writeDeploymentJson(
+        address deployer,
+        address safeAddress,
+        address treasuryImplementation,
+        address treasury,
+        address registryImplementation,
+        address registry,
+        address orderbook,
+        address spotPoolFactory,
+        address perpPoolFactory
+    ) internal {
+        string memory obj = "deployment";
+        vm.serializeUint(obj, "chainId", block.chainid);
+        vm.serializeAddress(obj, "deployer", deployer);
+        vm.serializeAddress(obj, "safeOwner", safeAddress);
+        vm.serializeAddress(obj, "protocolTreasuryImpl", treasuryImplementation);
+        vm.serializeAddress(obj, "protocolTreasuryProxy", treasury);
+        vm.serializeAddress(obj, "dexRegistryImpl", registryImplementation);
+        vm.serializeAddress(obj, "dexRegistryProxy", registry);
+        vm.serializeAddress(obj, "orderbook", orderbook);
+        vm.serializeAddress(obj, "spotPoolFactory", spotPoolFactory);
+        string memory out = vm.serializeAddress(obj, "perpPoolFactory", perpPoolFactory);
+
+        vm.createDir("deployments", true);
+        vm.writeJson(out, string.concat("deployments/", vm.toString(block.chainid), ".json"));
     }
 }

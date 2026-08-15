@@ -45,13 +45,28 @@ forge script script/DeployDex.s.sol:DeployDex \
 | 워크플로 | 트리거 | 하는 일 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push(main) / PR | `forge build` + `forge test` + gas snapshot 대조 |
-| `.github/workflows/release-monad-mainnet-deploy.yml` | release published / 수동 | DEX 스택 배포 + Sourcify/SocialScan 검증 + 주소 JSON/ABI 릴리즈 첨부 |
+| `.github/workflows/deploy.yml` | 수동(`workflow_dispatch`) / release published | 프리플라이트 → DEX 스택 배포 → 배선·소유권 온체인 검증 → Sourcify/SocialScan 검증 → 주소 JSON/ABI 첨부 |
 
-필수 GitHub Secrets: `MONAD_RPC_URL`, `PRIVATE_KEY`, `SAFE_ADDRESS`
-선택 GitHub Variables: `SKIP_VERIFY` (`true`/`false`, 기본 `false`)
+`deploy.yml`은 `network` 입력으로 대상 체인을 고릅니다. `release` 이벤트는 항상 mainnet.
 
-> 릴리즈 워크플로는 **스택 전체를 새로 배포**합니다. 업그레이드가 아니라 신규 배포이므로
-> 이미 운영 중인 배포가 있으면 릴리즈를 발행하기 전에 의도한 동작인지 확인하세요.
+| network | chain id | 필요한 Secrets |
+|---|---|---|
+| `testnet` | 10143 | `MONAD_TESTNET_RPC_URL`, `TESTNET_PRIVATE_KEY`, `TESTNET_SAFE_ADDRESS` |
+| `mainnet` | 143 | `MONAD_RPC_URL`, `PRIVATE_KEY`, `SAFE_ADDRESS` |
+
+선택 GitHub Variables: `SKIP_VERIFY` (`true`/`false`, 기본 `false`) — 실행 시 입력으로도 덮어쓸 수 있습니다.
+
+잡은 `network` 이름의 GitHub Environment에서 실행됩니다. **레포 설정에서 `mainnet` 환경에
+required reviewer를 걸어두면 실제 배포가 수동 승인 뒤에만 나갑니다.**
+
+안전장치:
+- RPC가 보고한 chain id가 대상 체인과 다르면 배포 전에 실패 (RPC 시크릿 오설정 방지)
+- 배포자 잔액 0 또는 `SAFE_ADDRESS == 배포자`면 배포 전에 실패
+- 배포 후 `registry`/`treasury` 소유권과 orderbook·팩토리 배선을 온체인 조회로 대조,
+  하나라도 어긋나면 잡 실패 (`setOrderbook`은 1회성이라 재배포 외 복구 불가)
+
+> 배포 워크플로는 **스택 전체를 새로 배포**합니다. 업그레이드가 아니라 신규 배포이므로
+> 이미 운영 중인 배포가 있으면 실행 전에 의도한 동작인지 확인하세요.
 
 ## 관련 레포
 
