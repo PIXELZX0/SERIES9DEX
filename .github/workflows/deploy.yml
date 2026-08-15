@@ -1,0 +1,261 @@
+name: Deploy DEX
+
+# One workflow for both networks.
+#   - workflow_dispatch: pick testnet (10143) or mainnet (143)
+#   - release published:  mainnet
+# Each run deploys a BRAND NEW stack; it is not an upgrade.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Target network
+        type: choice
+        options: [testnet, mainnet]
+        default: testnet
+      skip_verify:
+        description: Skip source verification
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dex-deploy-${{ inputs.network || 'mainnet' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy stack (${{ inputs.network || 'mainnet' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Add a required reviewer to the "mainnet" environment in repo settings to
+    # gate real deployments behind manual approval.
+    environment: ${{ inputs.network || 'mainnet' }}
+    env:
+      NETWORK: ${{ inputs.network || 'mainnet' }}
+      CHAIN_ID: ${{ inputs.network == 'testnet' && '10143' || '143' }}
+      RPC_URL: ${{ inputs.network == 'testnet' && secrets.MONAD_TESTNET_RPC_URL || secrets.MONAD_RPC_URL }}
+      PRIVATE_KEY: ${{ inputs.network == 'testnet' && secrets.TESTNET_PRIVATE_KEY || secrets.PRIVATE_KEY }}
+      SAFE_ADDRESS: ${{ inputs.network == 'testnet' && secrets.TESTNET_SAFE_ADDRESS || secrets.SAFE_ADDRESS }}
+      SKIP_VERIFY: ${{ inputs.skip_verify || vars.SKIP_VERIFY || 'false' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${RPC_URL:?RPC URL secret is required (MONAD_RPC_URL / MONAD_TESTNET_RPC_URL)}"
+          : "${PRIVATE_KEY:?private key secret is required (PRIVATE_KEY / TESTNET_PRIVATE_KEY)}"
+          : "${SAFE_ADDRESS:?safe address secret is required (SAFE_ADDRESS / TESTNET_SAFE_ADDRESS)}"
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Show Foundry version
+        run: forge --version
+
+      - name: Build contracts
+        env:
+          FOUNDRY_PROFILE: deploy
+        run: forge build
+
+      - name: Test before deploying
+        run: forge test
+
+      # A wrong RPC secret would otherwise silently deploy to the wrong chain.
+      - name: Preflight (chain id + deployer balance)
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACTUAL_CHAIN_ID="$(cast chain-id --rpc-url "$RPC_URL")"
+          if [[ "$ACTUAL_CHAIN_ID" != "$CHAIN_ID" ]]; then
+            echo "RPC reports chain id ${ACTUAL_CHAIN_ID}, expected ${CHAIN_ID} for ${NETWORK}." >&2
+            exit 1
+          fi
+
+          DEPLOYER="$(cast wallet address --private-key "$PRIVATE_KEY")"
+          BALANCE="$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL")"
+          echo "Deployer ${DEPLOYER} balance: ${BALANCE} wei"
+          if [[ "$BALANCE" == "0" ]]; then
+            echo "Deployer has no funds on ${NETWORK}." >&2
+            exit 1
+          fi
+
+          lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+          if [[ "$(lc "$DEPLOYER")" == "$(lc "$SAFE_ADDRESS")" ]]; then
+            echo "SAFE_ADDRESS must differ from the deployer." >&2
+            exit 1
+          fi
+
+          # Ownership transfer to the Safe is permanent. If nothing is deployed
+          # at that address, the protocol is owned by nobody.
+          SAFE_CODE="$(cast code "$SAFE_ADDRESS" --rpc-url "$RPC_URL")"
+          if [[ "$SAFE_CODE" == "0x" || -z "$SAFE_CODE" ]]; then
+            echo "No contract deployed at SAFE_ADDRESS ${SAFE_ADDRESS} on ${NETWORK}." >&2
+            echo "Deploy the Safe first: ownership transfer is irreversible." >&2
+            exit 1
+          fi
+
+          echo "deployer=$DEPLOYER" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve artifact names
+        id: names
+        shell: bash
+        run: |
+          set -euo pipefail
+          SLUG="$(printf '%s' "${GITHUB_REF_NAME}" | tr -c 'A-Za-z0-9._-' '-')"
+          SLUG="${SLUG#-}"; SLUG="${SLUG%-}"
+          [[ -z "$SLUG" ]] && SLUG="run-${GITHUB_RUN_ID}"
+          echo "slug=${NETWORK}-${SLUG}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate ABI JSON files
+        id: abi
+        env:
+          SLUG: ${{ steps.names.outputs.slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ABI_DIR="release-abis-${SLUG}"
+          mkdir -p "$ABI_DIR"
+          for name in DexRegistry ProtocolTreasury Orderbook SpotPool SpotPoolFactory PerpPool PerpPoolFactory; do
+            jq '.abi' "out/${name}.sol/${name}.json" > "$ABI_DIR/${name}.abi.json"
+          done
+          echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy DEX stack
+        id: deploy
+        env:
+          FOUNDRY_PROFILE: deploy
+          SLUG: ${{ steps.names.outputs.slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          forge script script/DeployDex.s.sol:DeployDex \
+            --rpc-url "$RPC_URL" \
+            --broadcast
+
+          # The script writes a labeled record; the broadcast file is the raw
+          # on-chain proof and only calls both proxies "ERC1967Proxy".
+          ADDRESSES="deployments/${CHAIN_ID}.json"
+          BROADCAST="broadcast/DeployDex.s.sol/${CHAIN_ID}/run-latest.json"
+          test -f "$ADDRESSES" || { echo "Missing $ADDRESSES" >&2; exit 1; }
+          test -f "$BROADCAST" || { echo "Missing $BROADCAST" >&2; exit 1; }
+
+          RUN_FILE="release-deploy-${SLUG}.json"
+          jq --arg network "$NETWORK" \
+             --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             '. + {network: $network, generatedAt: $generatedAt}' \
+             "$ADDRESSES" > "$RUN_FILE"
+
+          {
+            echo "addresses=$ADDRESSES"
+            echo "broadcast=$BROADCAST"
+            echo "run_file=$RUN_FILE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Assert on-chain wiring and ownership
+        shell: bash
+        run: ./script/assert-deployment.sh "${{ steps.deploy.outputs.addresses }}"
+
+      - name: Verify contracts
+        env:
+          ADDRESSES: ${{ steps.deploy.outputs.addresses }}
+          SOURCIFY_VERIFIER_URL: https://sourcify-api-monad.blockvision.org
+          SOCIALSCAN_VERIFIER_URL: https://api.socialscan.io/monad/v1/explorer/command_api/contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$SKIP_VERIFY" == "true" ]]; then
+            echo "Skipping verification (SKIP_VERIFY=true)."
+            exit 0
+          fi
+
+          get() { jq -r ".$1" "$ADDRESSES"; }
+          DEPLOYER="$(get deployer)"
+          SAFE="$(get safeOwner)"
+          TREASURY_IMPL="$(get protocolTreasuryImpl)"
+          TREASURY="$(get protocolTreasuryProxy)"
+          REGISTRY_IMPL="$(get dexRegistryImpl)"
+          REGISTRY="$(get dexRegistryProxy)"
+
+          PROXY_PATH="lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy"
+          REGISTRY_ARG="$(cast abi-encode 'constructor(address)' "$REGISTRY")"
+
+          verify() { # address path [constructor-args]
+            local addr="$1" path="$2" args="${3:-}"
+            local extra=()
+            [[ -n "$args" ]] && extra=(--constructor-args "$args")
+
+            forge verify-contract "$addr" "$path" \
+              --chain "$CHAIN_ID" --rpc-url "$RPC_URL" "${extra[@]}" \
+              --verifier sourcify --verifier-url "$SOURCIFY_VERIFIER_URL" \
+              || echo "::warning title=Sourcify verification failed::${path} (${addr})"
+
+            forge verify-contract "$addr" "$path" \
+              --chain "$CHAIN_ID" --rpc-url "$RPC_URL" "${extra[@]}" \
+              --verifier blockscout --verifier-url "$SOCIALSCAN_VERIFIER_URL" \
+              || echo "::warning title=SocialScan verification failed::${path} (${addr})"
+          }
+
+          verify "$TREASURY_IMPL" "src/ProtocolTreasury.sol:ProtocolTreasury"
+          verify "$REGISTRY_IMPL" "src/DexRegistry.sol:DexRegistry"
+          verify "$(get orderbook)" "src/Orderbook.sol:Orderbook" "$REGISTRY_ARG"
+          verify "$(get spotPoolFactory)" "src/SpotPoolFactory.sol:SpotPoolFactory" "$REGISTRY_ARG"
+          verify "$(get perpPoolFactory)" "src/PerpPoolFactory.sol:PerpPoolFactory" "$REGISTRY_ARG"
+
+          verify "$TREASURY" "$PROXY_PATH" \
+            "$(cast abi-encode 'constructor(address,bytes)' "$TREASURY_IMPL" \
+               "$(cast calldata 'initialize(address)' "$SAFE")")"
+          verify "$REGISTRY" "$PROXY_PATH" \
+            "$(cast abi-encode 'constructor(address,bytes)' "$REGISTRY_IMPL" \
+               "$(cast calldata 'initialize(address,address)' "$DEPLOYER" "$TREASURY")")"
+
+      - name: Upload workflow artifacts
+        if: ${{ always() && steps.deploy.outputs.run_file != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dex-deploy-${{ steps.names.outputs.slug }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.deploy.outputs.run_file }}
+            ${{ steps.deploy.outputs.broadcast }}
+            ${{ steps.abi.outputs.abi_dir }}
+
+      - name: Attach artifacts to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.deploy.outputs.run_file }}
+            ${{ steps.abi.outputs.abi_dir }}/*.json
+
+      - name: Write job summary
+        env:
+          RUN_FILE: ${{ steps.deploy.outputs.run_file }}
+        shell: bash
+        run: |
+          {
+            echo "## Series9DEX deployment — ${NETWORK} (chain ${CHAIN_ID})"
+            echo ""
+            echo "- Ref: \`${GITHUB_REF_NAME}\`"
+            echo "- Safe owner: \`${SAFE_ADDRESS}\`"
+            echo ""
+            echo "| Contract | Address |"
+            echo "|---|---|"
+            jq -r 'to_entries[] | select(.value | type == "string" and startswith("0x")) | "| \(.key) | `\(.value)` |"' "$RUN_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
