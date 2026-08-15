@@ -109,6 +109,16 @@ jobs:
             exit 1
           fi
 
+          # Code exists, but is it a multisig? A wrong-but-valid contract address
+          # would still take ownership permanently. Warn rather than block, since
+          # the owner may be a non-Safe multisig.
+          if THRESHOLD="$(cast call "$SAFE_ADDRESS" 'getThreshold()(uint256)' --rpc-url "$RPC_URL" 2>/dev/null)"; then
+            OWNERS="$(cast call "$SAFE_ADDRESS" 'getOwners()(address[])' --rpc-url "$RPC_URL" 2>/dev/null || echo '?')"
+            echo "Safe ${SAFE_ADDRESS}: threshold ${THRESHOLD}, owners ${OWNERS}"
+          else
+            echo "::warning title=Owner may not be a Safe::${SAFE_ADDRESS} has code but does not answer getThreshold()"
+          fi
+
           echo "deployer=$DEPLOYER" >> "$GITHUB_OUTPUT"
 
       - name: Resolve artifact names
