@@ -231,11 +231,30 @@ jobs:
             "$(cast abi-encode 'constructor(address,bytes)' "$REGISTRY_IMPL" \
                "$(cast calldata 'initialize(address,address)' "$DEPLOYER" "$TREASURY")")"
 
-          # A successful submission is not a match. Read back what Sourcify
-          # actually stored.
+          # A successful submission is not a match. forge submits verification
+          # as an async job, so read back what Sourcify actually stored --
+          # retrying, because a contract it has not finished processing yet
+          # answers 404.
+          #
+          # Never `curl -sf` here: under `set -e` an expected 404 aborts the
+          # whole step and marks a successful deployment as failed. Verification
+          # is discoverability, not correctness; the on-chain assertions above
+          # are what gate the deploy.
           echo "--- Sourcify status ---"
+          sourcify_match() { # address -> prints status, always exit 0
+            local addr="$1" body status
+            body="$(curl -s --max-time 20 "${SOURCIFY_VERIFIER_URL}/v2/contract/${CHAIN_ID}/${addr}" || true)"
+            status="$(printf '%s' "$body" | jq -r '.match // "none"' 2>/dev/null || echo none)"
+            printf '%s' "${status:-none}"
+          }
+
           for addr in $(jq -r 'to_entries[] | select(.key | test("Impl|Proxy|orderbook|Factory|PositionManager")) | .value' "$ADDRESSES"); do
-            STATUS="$(curl -sf "${SOURCIFY_VERIFIER_URL}/v2/contract/${CHAIN_ID}/${addr}" | jq -r '.match // "none"')"
+            STATUS=none
+            for attempt in 1 2 3 4 5 6; do
+              STATUS="$(sourcify_match "$addr")"
+              [[ "$STATUS" == "match" || "$STATUS" == "exact_match" ]] && break
+              sleep 10
+            done
             if [[ "$STATUS" == "match" || "$STATUS" == "exact_match" ]]; then
               echo "OK  ${addr}: ${STATUS}"
             else
