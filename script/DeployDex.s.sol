@@ -9,6 +9,7 @@ import {DexRegistry} from "../src/DexRegistry.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
 import {Orderbook} from "../src/Orderbook.sol";
+import {DexPositionManager} from "../src/DexPositionManager.sol";
 
 /// @notice Deploys the Series9DEX stack with a Safe multisig as the final owner.
 ///
@@ -61,6 +62,8 @@ contract DeployDex is Script {
         Orderbook orderbook = new Orderbook(address(registry));
         SpotPoolFactory spotPoolFactory = new SpotPoolFactory(address(registry));
         PerpPoolFactory perpPoolFactory = new PerpPoolFactory(address(registry));
+        // Periphery: the registry does not need to know about it, LPs opt in.
+        DexPositionManager positionManager = new DexPositionManager(address(registry));
 
         // --- Wire, then hand over ---
         registry.setOrderbook(address(orderbook));
@@ -77,6 +80,7 @@ contract DeployDex is Script {
         console.log("Orderbook:", address(orderbook));
         console.log("SpotPoolFactory:", address(spotPoolFactory));
         console.log("PerpPoolFactory:", address(perpPoolFactory));
+        console.log("DexPositionManager:", address(positionManager));
 
         // Labeled record for CI: verification and post-deploy assertions need to
         // know which proxy is which, and the broadcast file only says
@@ -90,7 +94,8 @@ contract DeployDex is Script {
             address(registry),
             address(orderbook),
             address(spotPoolFactory),
-            address(perpPoolFactory)
+            address(perpPoolFactory),
+            address(positionManager)
         );
     }
 
@@ -103,7 +108,8 @@ contract DeployDex is Script {
         address registry,
         address orderbook,
         address spotPoolFactory,
-        address perpPoolFactory
+        address perpPoolFactory,
+        address positionManager
     ) internal {
         string memory obj = "deployment";
         vm.serializeUint(obj, "chainId", block.chainid);
@@ -115,7 +121,8 @@ contract DeployDex is Script {
         vm.serializeAddress(obj, "dexRegistryProxy", registry);
         vm.serializeAddress(obj, "orderbook", orderbook);
         vm.serializeAddress(obj, "spotPoolFactory", spotPoolFactory);
-        string memory out = vm.serializeAddress(obj, "perpPoolFactory", perpPoolFactory);
+        vm.serializeAddress(obj, "perpPoolFactory", perpPoolFactory);
+        string memory out = vm.serializeAddress(obj, "dexPositionManager", positionManager);
 
         vm.createDir("deployments", true);
         vm.writeJson(out, string.concat("deployments/", vm.toString(block.chainid), ".json"));

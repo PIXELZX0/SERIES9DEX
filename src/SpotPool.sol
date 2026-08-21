@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import {ERC20} from "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
@@ -9,13 +8,18 @@ import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
 import {FeeSplit} from "./libraries/FeeSplit.sol";
 import {IOrderbook} from "./interfaces/IOrderbook.sol";
 
-/// @notice UniV2-style constant-product spot pool (DEX.md §5.1). The pool
-/// itself is the LP token. Immutable: fee rate is fixed at creation by the
-/// pool creator; the protocol cut (0.1% of the lp fee) accrues separately and
-/// anyone may sweep it to the treasury. Embeds a cumulative-price TWAP oracle
-/// consumed by perp pools, and triggers bounded orderbook auto-matching after
-/// user swaps.
-contract SpotPool is ERC20, ReentrancyGuard {
+/// @notice UniV2-style constant-product spot pool (DEX.md §5.1). Immutable:
+/// fee rate is fixed at creation by the pool creator; the protocol cut (0.1%
+/// of the lp fee) accrues separately and anyone may sweep it to the treasury.
+/// Embeds a cumulative-price TWAP oracle consumed by perp pools, and triggers
+/// bounded orderbook auto-matching after user swaps.
+///
+/// LP shares are a plain non-transferable ledger (`sharesOf`/`totalShares`) —
+/// there is no fungible LP token. Transferable ownership of a position is the
+/// ERC-721 minted by `DexPositionManager`, which custodies the shares. This
+/// mirrors Uniswap V3, where the core pool tracks positions and only the
+/// periphery tokenizes them.
+contract SpotPool is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint256 public constant MINIMUM_LIQUIDITY = 1000;
@@ -28,6 +32,9 @@ contract SpotPool is ERC20, ReentrancyGuard {
     address public immutable token1;
     uint32 public immutable lpFeeRatePpm;
     bytes32 public immutable pairId;
+
+    uint256 public totalShares;
+    mapping(address => uint256) public sharesOf;
 
     uint256 public reserve0;
     uint256 public reserve1;
@@ -44,12 +51,19 @@ contract SpotPool is ERC20, ReentrancyGuard {
     error InsufficientLiquidityMinted();
     error InsufficientLiquidityBurned();
     error InsufficientLiquidity();
+    error InsufficientShares();
     error SlippageExceeded();
     error OnlyOrderbook();
 
-    event LiquidityAdded(address indexed provider, address indexed to, uint256 amount0, uint256 amount1, uint256 liquidity);
-    event LiquidityRemoved(address indexed provider, address indexed to, uint256 amount0, uint256 amount1, uint256 liquidity);
-    event Swapped(address indexed sender, address indexed to, address indexed tokenIn, uint256 amountIn, uint256 amountOut);
+    event LiquidityAdded(
+        address indexed provider, address indexed to, uint256 amount0, uint256 amount1, uint256 liquidity
+    );
+    event LiquidityRemoved(
+        address indexed provider, address indexed to, uint256 amount0, uint256 amount1, uint256 liquidity
+    );
+    event Swapped(
+        address indexed sender, address indexed to, address indexed tokenIn, uint256 amountIn, uint256 amountOut
+    );
     event ProtocolFeesCollected(uint256 amount0, uint256 amount1);
 
     constructor(
@@ -60,7 +74,7 @@ contract SpotPool is ERC20, ReentrancyGuard {
         address token1_,
         uint32 lpFeeRatePpm_,
         bytes32 pairId_
-    ) ERC20("Series9 DEX LP", "S9-LP") {
+    ) {
         registry = registry_;
         orderbook = orderbook_;
         treasury = treasury_;
@@ -120,15 +134,15 @@ contract SpotPool is ERC20, ReentrancyGuard {
         used1 = _pull(token1, want1);
         if (used0 < amount0Min || used1 < amount1Min) revert SlippageExceeded();
 
-        uint256 supply = totalSupply();
+        uint256 supply = totalShares;
         if (supply == 0) {
             liquidity = Math.sqrt(used0 * used1) - MINIMUM_LIQUIDITY;
-            _mint(address(0xdead), MINIMUM_LIQUIDITY);
+            _mintShares(address(0xdead), MINIMUM_LIQUIDITY);
         } else {
             liquidity = Math.min(used0 * supply / _reserve0, used1 * supply / _reserve1);
         }
         if (liquidity == 0) revert InsufficientLiquidityMinted();
-        _mint(to, liquidity);
+        _mintShares(to, liquidity);
 
         _update(_reserve0 + used0, _reserve1 + used1);
         emit LiquidityAdded(msg.sender, to, used0, used1, liquidity);
@@ -140,13 +154,16 @@ contract SpotPool is ERC20, ReentrancyGuard {
         returns (uint256 amount0, uint256 amount1)
     {
         if (to == address(0)) revert ZeroAddress();
-        uint256 supply = totalSupply();
+        // Checked first so a caller without the shares gets a clear error
+        // instead of a divide-by-zero panic on an empty pool.
+        if (liquidity > sharesOf[msg.sender]) revert InsufficientShares();
+        uint256 supply = totalShares;
         amount0 = liquidity * reserve0 / supply;
         amount1 = liquidity * reserve1 / supply;
         if (amount0 == 0 || amount1 == 0) revert InsufficientLiquidityBurned();
         if (amount0 < amount0Min || amount1 < amount1Min) revert SlippageExceeded();
 
-        _burn(msg.sender, liquidity);
+        _burnShares(msg.sender, liquidity);
         _update(reserve0 - amount0, reserve1 - amount1);
         IERC20(token0).safeTransfer(to, amount0);
         IERC20(token1).safeTransfer(to, amount1);
@@ -220,6 +237,18 @@ contract SpotPool is ERC20, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------- internals
+
+    function _mintShares(address to, uint256 amount) internal {
+        totalShares += amount;
+        sharesOf[to] += amount;
+    }
+
+    function _burnShares(address from, uint256 amount) internal {
+        uint256 balance = sharesOf[from];
+        if (amount > balance) revert InsufficientShares();
+        sharesOf[from] = balance - amount;
+        totalShares -= amount;
+    }
 
     /// @dev Pull tokens and credit by balance delta (fee-on-transfer support).
     function _pull(address token, uint256 amount) internal returns (uint256 received) {

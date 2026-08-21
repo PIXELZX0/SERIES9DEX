@@ -19,6 +19,7 @@ REGISTRY="$(get dexRegistryProxy)"
 ORDERBOOK="$(get orderbook)"
 SPOT_FACTORY="$(get spotPoolFactory)"
 PERP_FACTORY="$(get perpPoolFactory)"
+POSITION_MANAGER="$(get dexPositionManager)"
 
 fail=0
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
@@ -41,5 +42,6 @@ check "registry.perpPoolFactory()" "$PERP_FACTORY" "$(call "$REGISTRY" 'perpPool
 check "orderbook.registry()"       "$REGISTRY"     "$(call "$ORDERBOOK" 'registry()(address)')"
 check "spotPoolFactory.registry()" "$REGISTRY"     "$(call "$SPOT_FACTORY" 'registry()(address)')"
 check "perpPoolFactory.registry()" "$REGISTRY"     "$(call "$PERP_FACTORY" 'registry()(address)')"
+check "positionManager.registry()" "$REGISTRY"     "$(call "$POSITION_MANAGER" 'registry()(address)')"
 
 exit $fail

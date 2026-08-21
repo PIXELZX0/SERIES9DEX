@@ -44,7 +44,9 @@ contract PerpPoolTest is Test {
         Orderbook orderbook = new Orderbook(address(registry));
         vm.startPrank(owner);
         registry.setOrderbook(address(orderbook));
-        registry.setFactories(address(new SpotPoolFactory(address(registry))), address(new PerpPoolFactory(address(registry))));
+        registry.setFactories(
+            address(new SpotPoolFactory(address(registry))), address(new PerpPoolFactory(address(registry)))
+        );
         vm.stopPrank();
 
         MockERC20 tokenA = new MockERC20("A", "A", 18);
@@ -151,7 +153,7 @@ contract PerpPoolTest is Test {
 
     function testLpSharesPriceAgainstEquity() public {
         _warmMark();
-        assertEq(perp.balanceOf(lp), 100_000 ether); // 1:1 initial
+        assertEq(perp.sharesOf(lp), 100_000 ether); // 1:1 initial
         vm.prank(keeper);
         uint256 shares = perp.addLiquidity(50_000 ether, 0, keeper);
         assertEq(shares, 50_000 ether); // no PnL => still 1:1
@@ -362,12 +364,7 @@ contract PerpPoolTest is Test {
     function testCreatePerpPoolValidation() public {
         vm.expectRevert(DexRegistry.InvalidQuoteToken.selector);
         registry.createPerpPool(
-            address(base),
-            address(quote),
-            address(0xbeef),
-            address(spot),
-            FEE_PPM,
-            PerpParams(10, 500, 100, 8000, 100)
+            address(base), address(quote), address(0xbeef), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100)
         );
         vm.expectRevert(DexRegistry.UnknownSpotPool.selector);
         registry.createPerpPool(

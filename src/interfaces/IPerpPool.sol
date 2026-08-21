@@ -14,4 +14,7 @@ interface IPerpPool {
     function pairId() external view returns (bytes32);
     function quoteToken() external view returns (address);
     function baseToken() external view returns (address);
+    function lpFeeRatePpm() external view returns (uint32);
+    function addLiquidity(uint256 quoteIn, uint256 minShares, address to) external returns (uint256 shares);
+    function removeLiquidity(uint256 shares, uint256 minQuoteOut, address to) external returns (uint256 quoteOut);
 }

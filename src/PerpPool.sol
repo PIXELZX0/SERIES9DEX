@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import {ERC20} from "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
@@ -24,7 +23,11 @@ import {PerpParams} from "./interfaces/IPerpPool.sol";
 ///
 /// Rebasing tokens are unsupported by policy. Fee-on-transfer quote tokens
 /// are credited by balance delta on deposit; payouts are plain transfers.
-contract PerpPool is ERC20, ReentrancyGuard {
+///
+/// LP shares are a plain non-transferable ledger (`sharesOf`/`totalShares`) —
+/// there is no fungible LP token. Transferable ownership of a vault position
+/// is the ERC-721 minted by `DexPositionManager`, which custodies the shares.
+contract PerpPool is ReentrancyGuard {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
     using SafeCast for int256;
@@ -55,6 +58,9 @@ contract PerpPool is ERC20, ReentrancyGuard {
 
     mapping(address => mapping(bool => Position)) public positions; // trader => isLong => position
 
+    uint256 public totalShares;
+    mapping(address => uint256) public sharesOf;
+
     uint256 public totalLiquidity; // LP-owned quote (realized)
     uint256 public protocolFeesQuote;
     uint256 public longSizeBase;
@@ -76,6 +82,7 @@ contract PerpPool is ERC20, ReentrancyGuard {
     error LeverageTooHigh();
     error UtilizationExceeded();
     error InsufficientLiquidity();
+    error InsufficientShares();
     error NotLiquidatable();
     error BelowMaintenance();
     error SlippageExceeded();
@@ -94,7 +101,12 @@ contract PerpPool is ERC20, ReentrancyGuard {
     event MarginAdded(address indexed trader, bool indexed isLong, uint256 amount);
     event MarginRemoved(address indexed trader, bool indexed isLong, uint256 amount);
     event Liquidated(
-        address indexed trader, bool indexed isLong, address indexed liquidator, uint256 sizeBase, uint256 markX18, uint256 reward
+        address indexed trader,
+        bool indexed isLong,
+        address indexed liquidator,
+        uint256 sizeBase,
+        uint256 markX18,
+        uint256 reward
     );
     event ProtocolFeesCollected(uint256 amount);
 
@@ -107,7 +119,7 @@ contract PerpPool is ERC20, ReentrancyGuard {
         uint32 lpFeeRatePpm_,
         bytes32 pairId_,
         PerpParams memory params
-    ) ERC20("Series9 Perp LP", "S9-PLP") {
+    ) {
         registry = registry_;
         treasury = treasury_;
         spotPool = spotPool_;
@@ -131,9 +143,8 @@ contract PerpPool is ERC20, ReentrancyGuard {
     function pokeMark() public returns (uint256) {
         (uint256 r0, uint256 r1, uint64 poolTs) = ISpotPool(spotPool).getReserves();
         if (r0 == 0 || r1 == 0) return cachedMarkX18; // pool not seeded yet
-        uint256 cum = baseIsToken0
-            ? ISpotPool(spotPool).price0CumulativeLast()
-            : ISpotPool(spotPool).price1CumulativeLast();
+        uint256 cum =
+            baseIsToken0 ? ISpotPool(spotPool).price0CumulativeLast() : ISpotPool(spotPool).price1CumulativeLast();
         uint256 live = baseIsToken0 ? r1 * 1e18 / r0 : r0 * 1e18 / r1;
         unchecked {
             cum += live * (block.timestamp - poolTs); // virtual accrual for stale pools
@@ -172,11 +183,10 @@ contract PerpPool is ERC20, ReentrancyGuard {
         uint256 totalOI = longSizeBase + shortSizeBase;
         if (mark > 0 && totalOI > 0 && longSizeBase != shortSizeBase) {
             bool longPays = longSizeBase > shortSizeBase;
-            uint256 imbalanceX18 = (longPays ? longSizeBase - shortSizeBase : shortSizeBase - longSizeBase) * 1e18 / totalOI;
+            uint256 imbalanceX18 =
+                (longPays ? longSizeBase - shortSizeBase : shortSizeBase - longSizeBase) * 1e18 / totalOI;
             // quote per base (X18) accrued over dt
-            uint256 deltaX18 = Math.mulDiv(
-                uint256(fundingCoeffPpmPerHour) * imbalanceX18 / 1e6, mark * dt / 3600, 1e18
-            );
+            uint256 deltaX18 = Math.mulDiv(uint256(fundingCoeffPpmPerHour) * imbalanceX18 / 1e6, mark * dt / 3600, 1e18);
             if (deltaX18 > 0) {
                 if (longPays) cumFundingLongX18 += deltaX18;
                 else cumFundingShortX18 += deltaX18;
@@ -202,7 +212,7 @@ contract PerpPool is ERC20, ReentrancyGuard {
         pokeMark();
         updateFunding();
         uint256 credited = _pull(quoteIn);
-        uint256 supply = totalSupply();
+        uint256 supply = totalShares;
         if (supply == 0) {
             shares = credited;
         } else {
@@ -212,7 +222,7 @@ contract PerpPool is ERC20, ReentrancyGuard {
         }
         if (shares == 0 || shares < minShares) revert SlippageExceeded();
         totalLiquidity += credited;
-        _mint(to, shares);
+        _mintShares(to, shares);
         emit LiquidityAdded(msg.sender, to, credited, shares);
     }
 
@@ -223,13 +233,14 @@ contract PerpPool is ERC20, ReentrancyGuard {
     {
         if (to == address(0)) revert ZeroAddress();
         if (shares == 0) revert ZeroAmount();
+        if (shares > sharesOf[msg.sender]) revert InsufficientShares();
         pokeMark();
         updateFunding();
         uint256 mark = cachedMarkX18;
         if ((longSizeBase > 0 || shortSizeBase > 0) && mark == 0) revert MarkNotReady();
 
         uint256 equity = lpEquity();
-        quoteOut = Math.mulDiv(shares, equity, totalSupply());
+        quoteOut = Math.mulDiv(shares, equity, totalShares);
         if (quoteOut < minQuoteOut) revert SlippageExceeded();
         // Unrealized trader losses back LP equity on paper only; cash out is
         // capped by realized liquidity.
@@ -239,7 +250,7 @@ contract PerpPool is ERC20, ReentrancyGuard {
         _checkUtilization(mark, remainingEquity, 0, true);
         _checkUtilization(mark, remainingEquity, 0, false);
 
-        _burn(msg.sender, shares);
+        _burnShares(msg.sender, shares);
         totalLiquidity -= quoteOut;
         IERC20(quoteToken).safeTransfer(to, quoteOut);
         emit LiquidityRemoved(msg.sender, to, quoteOut, shares);
@@ -419,6 +430,18 @@ contract PerpPool is ERC20, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------- internals
+
+    function _mintShares(address to, uint256 amount) internal {
+        totalShares += amount;
+        sharesOf[to] += amount;
+    }
+
+    function _burnShares(address from, uint256 amount) internal {
+        uint256 balance = sharesOf[from];
+        if (amount > balance) revert InsufficientShares();
+        sharesOf[from] = balance - amount;
+        totalShares -= amount;
+    }
 
     /// @dev Settle accrued funding on a position: owed quote moves from the
     /// position's margin to the LP vault (capped at available margin).

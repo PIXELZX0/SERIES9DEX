@@ -49,8 +49,7 @@ contract SpotPoolTest is Test {
 
         tokenA = new MockERC20("Token A", "TKA", 18);
         tokenB = new MockERC20("Token B", "TKB", 18);
-        (token0, token1) =
-            address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
+        (token0, token1) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
         pool = SpotPool(registry.createSpotPool(address(tokenA), address(tokenB), FEE_PPM, 1e15));
 
@@ -75,7 +74,7 @@ contract SpotPoolTest is Test {
     function testFirstMintLocksMinimumLiquidity() public {
         uint256 liquidity = _addLiquidity(alice, 100 ether, 400 ether);
         assertEq(liquidity, Math.sqrt(100 ether * 400 ether) - pool.MINIMUM_LIQUIDITY());
-        assertEq(pool.balanceOf(address(0xdead)), pool.MINIMUM_LIQUIDITY());
+        assertEq(pool.sharesOf(address(0xdead)), pool.MINIMUM_LIQUIDITY());
         (uint256 r0, uint256 r1,) = pool.getReserves();
         assertEq(r0, 100 ether);
         assertEq(r1, 400 ether);
@@ -242,13 +241,7 @@ contract SpotPoolTest is Test {
         vm.startPrank(alice);
         fot.approve(address(fotPool), type(uint256).max);
         plain.approve(address(fotPool), type(uint256).max);
-        fotPool.addLiquidity(
-            address(fot) < address(plain) ? 100 ether : 100 ether,
-            100 ether,
-            0,
-            0,
-            alice
-        );
+        fotPool.addLiquidity(address(fot) < address(plain) ? 100 ether : 100 ether, 100 ether, 0, 0, alice);
         (uint256 r0, uint256 r1,) = fotPool.getReserves();
         // FoT side reserve reflects the 1%-shaved receipt.
         if (fotPool.token0() == address(fot)) {
