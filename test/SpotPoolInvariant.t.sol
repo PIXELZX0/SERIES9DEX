@@ -50,7 +50,7 @@ contract SpotPoolHandler is Test {
     }
 
     function removeLiquidity(uint256 liquidity) external {
-        uint256 bal = pool.balanceOf(address(this));
+        uint256 bal = pool.sharesOf(address(this));
         if (bal == 0) return;
         liquidity = bound(liquidity, 1, bal);
         try pool.removeLiquidity(liquidity, 0, 0, address(this)) {} catch {}
@@ -72,9 +72,7 @@ contract SpotPoolInvariantTest is Test {
         address owner = makeAddr("owner");
         ProtocolTreasury treasury = ProtocolTreasury(
             address(
-                new ERC1967Proxy(
-                    address(new ProtocolTreasury()), abi.encodeCall(ProtocolTreasury.initialize, (owner))
-                )
+                new ERC1967Proxy(address(new ProtocolTreasury()), abi.encodeCall(ProtocolTreasury.initialize, (owner)))
             )
         );
         DexRegistry registry = DexRegistry(
@@ -117,7 +115,7 @@ contract SpotPoolInvariantTest is Test {
     /// LP supply and reserves are zero/non-zero together.
     function invariant_reservesBackSupply() public view {
         (uint256 r0, uint256 r1,) = pool.getReserves();
-        if (pool.totalSupply() > 0) {
+        if (pool.totalShares() > 0) {
             assertGt(r0, 0);
             assertGt(r1, 0);
         }

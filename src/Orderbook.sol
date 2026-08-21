@@ -288,10 +288,13 @@ contract Orderbook is ReentrancyGuard {
     /// poolAtLimit). Fill size is capped so the average execution price never
     /// crosses the limit; when the cap binds, the pool has been consumed down
     /// to the limit price and matching on this side must stop.
-    function _fillAgainstPool(Book storage book, address pool, Level storage level, Order storage order, uint256 orderId)
-        internal
-        returns (bool, bool)
-    {
+    function _fillAgainstPool(
+        Book storage book,
+        address pool,
+        Level storage level,
+        Order storage order,
+        uint256 orderId
+    ) internal returns (bool, bool) {
         uint256 g;
         uint256 reserveBase;
         uint256 reserveQuote;
@@ -346,7 +349,8 @@ contract Orderbook is ReentrancyGuard {
             uint256 dq = Math.min(dqMax, order.escrowRemaining);
             // Spend needed to buy the full remainder outright (getAmountIn).
             if (remainingBase < reserveBase) {
-                uint256 effInFull = Math.mulDiv(reserveQuote, remainingBase, reserveBase - remainingBase, Math.Rounding.Ceil);
+                uint256 effInFull =
+                    Math.mulDiv(reserveQuote, remainingBase, reserveBase - remainingBase, Math.Rounding.Ceil);
                 uint256 dqFull = Math.mulDiv(effInFull, PPM, g, Math.Rounding.Ceil);
                 dq = Math.min(dq, dqFull);
             }
@@ -392,11 +396,7 @@ contract Orderbook is ReentrancyGuard {
         return Math.mulDiv(reserveQuote, effIn, reserveBase * PPM + effIn);
     }
 
-    function _buyOut(uint256 reserveBase, uint256 reserveQuote, uint256 g, uint256 dq)
-        internal
-        pure
-        returns (uint256)
-    {
+    function _buyOut(uint256 reserveBase, uint256 reserveQuote, uint256 g, uint256 dq) internal pure returns (uint256) {
         uint256 effIn = g * dq;
         return Math.mulDiv(reserveBase, effIn, reserveQuote * PPM + effIn);
     }
@@ -414,8 +414,7 @@ contract Orderbook is ReentrancyGuard {
         uint256 price = order.priceX18;
         Level storage level = side == Side.BUY ? book.bidLevels[price] : book.askLevels[price];
 
-        uint256 remainingBase =
-            side == Side.SELL ? order.escrowRemaining : order.amountBase - order.filledBase;
+        uint256 remainingBase = side == Side.SELL ? order.escrowRemaining : order.amountBase - order.filledBase;
         level.totalBase -= remainingBase;
         // Node stays in the FIFO (lazy removal); matching skips non-OPEN
         // orders. An emptied level is unlinked so views stay honest.

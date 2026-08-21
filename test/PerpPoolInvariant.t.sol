@@ -59,7 +59,7 @@ contract PerpHandler is Test {
             quote.mint(address(this), amount);
             try perp.addLiquidity(amount, 0, address(this)) {} catch {}
         } else {
-            uint256 shares = perp.balanceOf(address(this));
+            uint256 shares = perp.sharesOf(address(this));
             if (shares == 0) return;
             amount = bound(amount, 1, shares);
             try perp.removeLiquidity(amount, 0, address(this)) {} catch {}
@@ -118,12 +118,7 @@ contract PerpPoolInvariantTest is Test {
         quote = MockERC20(spot.token1());
         perp = PerpPool(
             registry.createPerpPool(
-                address(base),
-                address(quote),
-                address(quote),
-                address(spot),
-                3000,
-                PerpParams(10, 500, 100, 8000, 100)
+                address(base), address(quote), address(quote), address(spot), 3000, PerpParams(10, 500, 100, 8000, 100)
             )
         );
 
@@ -148,10 +143,7 @@ contract PerpPoolInvariantTest is Test {
     function invariant_accountingSolvent() public view {
         (, uint256 mLong,,) = perp.positions(address(handler), true);
         (, uint256 mShort,,) = perp.positions(address(handler), false);
-        assertEq(
-            quote.balanceOf(address(perp)),
-            perp.totalLiquidity() + mLong + mShort + perp.protocolFeesQuote()
-        );
+        assertEq(quote.balanceOf(address(perp)), perp.totalLiquidity() + mLong + mShort + perp.protocolFeesQuote());
     }
 
     /// Open notional ledgers match the single handler's positions.

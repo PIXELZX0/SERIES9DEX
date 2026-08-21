@@ -140,7 +140,7 @@ jobs:
           set -euo pipefail
           ABI_DIR="release-abis-${SLUG}"
           mkdir -p "$ABI_DIR"
-          for name in DexRegistry ProtocolTreasury Orderbook SpotPool SpotPoolFactory PerpPool PerpPoolFactory; do
+          for name in DexRegistry ProtocolTreasury Orderbook SpotPool SpotPoolFactory PerpPool PerpPoolFactory DexPositionManager; do
             jq '.abi' "out/${name}.sol/${name}.json" > "$ABI_DIR/${name}.abi.json"
           done
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
@@ -222,6 +222,7 @@ jobs:
           verify "$(get orderbook)" "src/Orderbook.sol:Orderbook" "$REGISTRY_ARG"
           verify "$(get spotPoolFactory)" "src/SpotPoolFactory.sol:SpotPoolFactory" "$REGISTRY_ARG"
           verify "$(get perpPoolFactory)" "src/PerpPoolFactory.sol:PerpPoolFactory" "$REGISTRY_ARG"
+          verify "$(get dexPositionManager)" "src/DexPositionManager.sol:DexPositionManager" "$REGISTRY_ARG"
 
           verify "$TREASURY" "$PROXY_PATH" \
             "$(cast abi-encode 'constructor(address,bytes)' "$TREASURY_IMPL" \
@@ -233,7 +234,7 @@ jobs:
           # A successful submission is not a match. Read back what Sourcify
           # actually stored.
           echo "--- Sourcify status ---"
-          for addr in $(jq -r 'to_entries[] | select(.key | test("Impl|Proxy|orderbook|Factory")) | .value' "$ADDRESSES"); do
+          for addr in $(jq -r 'to_entries[] | select(.key | test("Impl|Proxy|orderbook|Factory|PositionManager")) | .value' "$ADDRESSES"); do
             STATUS="$(curl -sf "${SOURCIFY_VERIFIER_URL}/v2/contract/${CHAIN_ID}/${addr}" | jq -r '.match // "none"')"
             if [[ "$STATUS" == "match" || "$STATUS" == "exact_match" ]]; then
               echo "OK  ${addr}: ${STATUS}"
