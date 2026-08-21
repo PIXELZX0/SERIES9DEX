@@ -183,16 +183,16 @@ contract OrderbookTest is Test {
         _placeSell(4.5e18, 1 ether);
         (uint256 bestAskPrice,) = orderbook.bestAsk(pairId);
         assertEq(bestAskPrice, 4.4e18);
-        (, , uint256 next) = orderbook.levelOf(pairId, Orderbook.Side.SELL, 4.4e18);
+        (,, uint256 next) = orderbook.levelOf(pairId, Orderbook.Side.SELL, 4.4e18);
         assertEq(next, 4.5e18);
-        (, , next) = orderbook.levelOf(pairId, Orderbook.Side.SELL, 4.5e18);
+        (,, next) = orderbook.levelOf(pairId, Orderbook.Side.SELL, 4.5e18);
         assertEq(next, 4.6e18);
 
         _placeBuy(3.4e18, 1 ether);
         _placeBuy(3.6e18, 1 ether);
         (uint256 bestBidPrice,) = orderbook.bestBid(pairId);
         assertEq(bestBidPrice, 3.6e18);
-        (, , next) = orderbook.levelOf(pairId, Orderbook.Side.BUY, 3.6e18);
+        (,, next) = orderbook.levelOf(pairId, Orderbook.Side.BUY, 3.6e18);
         assertEq(next, 3.4e18);
     }
 
@@ -201,7 +201,7 @@ contract OrderbookTest is Test {
         _placeSell(4.8e18, 1 ether);
         vm.prank(maker);
         orderbook.placeOrder(pairId, Orderbook.Side.SELL, 4.6e18, 1 ether, expiry, 4.4e18);
-        (, , uint256 next) = orderbook.levelOf(pairId, Orderbook.Side.SELL, 4.4e18);
+        (,, uint256 next) = orderbook.levelOf(pairId, Orderbook.Side.SELL, 4.4e18);
         assertEq(next, 4.6e18);
     }
 

@@ -49,9 +49,8 @@ contract DexRegistryTest is Test {
     }
 
     function _sorted() internal view returns (address t0, address t1) {
-        (t0, t1) = address(tokenA) < address(tokenB)
-            ? (address(tokenA), address(tokenB))
-            : (address(tokenB), address(tokenA));
+        (t0, t1) =
+            address(tokenA) < address(tokenB) ? (address(tokenA), address(tokenB)) : (address(tokenB), address(tokenA));
     }
 
     function _defaultPerpParams() internal pure returns (PerpParams memory) {

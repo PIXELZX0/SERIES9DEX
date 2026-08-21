@@ -168,9 +168,8 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
         _registerPair(pairId, token0, token1);
         address baseToken = quoteToken == token0 ? token1 : token0;
-        pool = IPerpPoolFactory(perpPoolFactory).deploy(
-            treasury, spotPool, baseToken, quoteToken, lpFeeRatePpm, pairId, params
-        );
+        pool = IPerpPoolFactory(perpPoolFactory)
+            .deploy(treasury, spotPool, baseToken, quoteToken, lpFeeRatePpm, pairId, params);
         _perpPools[pairId].push(pool);
         poolPairId[pool] = pairId;
         emit PerpPoolCreated(pairId, pool, msg.sender, quoteToken, lpFeeRatePpm);

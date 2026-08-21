@@ -101,12 +101,7 @@ contract DexEndToEndTest is Test {
         // 6. A perp pool goes live against the same pair, LP funds it.
         perp = PerpPool(
             registry.createPerpPool(
-                address(base),
-                address(quote),
-                address(quote),
-                address(spot),
-                3000,
-                PerpParams(10, 500, 100, 8000, 100)
+                address(base), address(quote), address(quote), address(spot), 3000, PerpParams(10, 500, 100, 8000, 100)
             )
         );
         vm.startPrank(lpUser);
@@ -144,9 +139,7 @@ contract DexEndToEndTest is Test {
         assertEq(size, 0);
 
         // 10. Books stay solvent end to end.
-        assertEq(
-            quote.balanceOf(address(perp)), perp.totalLiquidity() + perp.protocolFeesQuote(), "perp solvency"
-        );
+        assertEq(quote.balanceOf(address(perp)), perp.totalLiquidity() + perp.protocolFeesQuote(), "perp solvency");
         (uint256 r0, uint256 r1,) = spot.getReserves();
         assertGe(base.balanceOf(address(spot)), r0 + spot.protocolFees0());
         assertGe(quote.balanceOf(address(spot)), r1 + spot.protocolFees1());

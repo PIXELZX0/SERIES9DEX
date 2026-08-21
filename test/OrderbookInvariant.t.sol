@@ -40,13 +40,10 @@ contract OrderbookHandler is Test {
         MockERC20 token = sell ? base : quote;
         token.mint(address(this), amount * price / 1e18 + amount + 1 ether);
         try orderbook.placeOrder(
-            pairId,
-            sell ? Orderbook.Side.SELL : Orderbook.Side.BUY,
-            price,
-            amount,
-            uint64(block.timestamp + ttl),
-            0
-        ) returns (uint256 id) {
+            pairId, sell ? Orderbook.Side.SELL : Orderbook.Side.BUY, price, amount, uint64(block.timestamp + ttl), 0
+        ) returns (
+            uint256 id
+        ) {
             myOrders.push(id);
         } catch {}
     }
