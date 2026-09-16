@@ -11,13 +11,14 @@ import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPool} from "../src/PerpPool.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
-import {Orderbook} from "../src/Orderbook.sol";
+import {Pair} from "../src/Pair.sol";
 import {PerpParams} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 contract DexPositionManagerTest is Test {
     DexRegistry internal registry;
     DexPositionManager internal manager;
+    Pair internal pair;
     SpotPool internal spot;
     PerpPool internal perp;
     MockERC20 internal base; // token0
@@ -47,7 +48,6 @@ contract DexPositionManagerTest is Test {
             )
         );
         vm.startPrank(owner);
-        registry.setOrderbook(address(new Orderbook(address(registry))));
         registry.setFactories(
             address(new SpotPoolFactory(address(registry))), address(new PerpPoolFactory(address(registry)))
         );
@@ -63,11 +63,10 @@ contract DexPositionManagerTest is Test {
         MockERC20 tokenB = new MockERC20("B", "B", 18);
         (base, quote) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
-        spot = SpotPool(registry.createSpotPool(address(base), address(quote), FEE_PPM, 1e15));
+        pair = Pair(registry.createPair(address(base), address(quote), 1e15));
+        spot = SpotPool(pair.createSpotPool(FEE_PPM));
         perp = PerpPool(
-            registry.createPerpPool(
-                address(base),
-                address(quote),
+            pair.createPerpPool(
                 address(quote),
                 address(spot),
                 FEE_PPM,
@@ -277,8 +276,7 @@ contract DexPositionManagerTest is Test {
     function test_mintSpot_revertsOnUnregisteredPool() public {
         // A look-alike pool the registry never deployed must not be able to
         // borrow the manager's token approvals.
-        SpotPool rogue =
-            new SpotPool(address(registry), address(0), address(0), address(base), address(quote), FEE_PPM, bytes32(0));
+        SpotPool rogue = new SpotPool(address(registry), address(0), address(0), address(base), address(quote), FEE_PPM);
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.UnknownPool.selector);
         manager.mintSpot(address(rogue), 1000 ether, 4000 ether, 0, 0, alice);
@@ -354,7 +352,8 @@ contract DexPositionManagerTest is Test {
     }
 
     function test_tokenURI_survivesHostileTokenSymbols() public {
-        SpotPool hostilePool = SpotPool(registry.createSpotPool(address(hostile), address(noSymbol), FEE_PPM, 1e15));
+        Pair hostilePair = Pair(registry.createPair(address(hostile), address(noSymbol), 1e15));
+        SpotPool hostilePool = SpotPool(hostilePair.createSpotPool(FEE_PPM));
         hostile.mint(alice, 1000 ether);
         noSymbol.mint(alice, 1000 ether);
 

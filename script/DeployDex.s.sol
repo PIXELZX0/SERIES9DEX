@@ -8,7 +8,6 @@ import {ProtocolTreasury} from "../src/ProtocolTreasury.sol";
 import {DexRegistry} from "../src/DexRegistry.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
-import {Orderbook} from "../src/Orderbook.sol";
 import {DexPositionManager} from "../src/DexPositionManager.sol";
 
 /// @notice Deploys the Series9DEX stack with a Safe multisig as the final owner.
@@ -16,9 +15,13 @@ import {DexPositionManager} from "../src/DexPositionManager.sol";
 /// Flow:
 ///   1. ProtocolTreasury proxy (Safe as owner from the start)
 ///   2. DexRegistry proxy (deployer as temporary owner for wiring)
-///   3. Orderbook + factories (immutable, take the registry proxy address)
-///   4. Wire orderbook + factories into the registry
+///   3. Pool factories (immutable, take the registry proxy address)
+///   4. Wire factories into the registry
 ///   5. Transfer registry ownership to the Safe
+///
+/// Pairs (each a CREATE2-deployed `Pair` contract) and pools are not created
+/// here — they're created later at runtime via `DexRegistry.createPair` and
+/// `Pair.createSpotPool`/`createPerpPool`.
 ///
 /// Usage:
 ///   PRIVATE_KEY=0x... SAFE_ADDRESS=0x... forge script script/DeployDex.s.sol \
@@ -59,14 +62,12 @@ contract DeployDex is Script {
         );
 
         // --- Immutable singletons (need the registry proxy address) ---
-        Orderbook orderbook = new Orderbook(address(registry));
         SpotPoolFactory spotPoolFactory = new SpotPoolFactory(address(registry));
         PerpPoolFactory perpPoolFactory = new PerpPoolFactory(address(registry));
         // Periphery: the registry does not need to know about it, LPs opt in.
         DexPositionManager positionManager = new DexPositionManager(address(registry));
 
         // --- Wire, then hand over ---
-        registry.setOrderbook(address(orderbook));
         registry.setFactories(address(spotPoolFactory), address(perpPoolFactory));
         registry.transferOwnership(safeAddress);
 
@@ -77,7 +78,6 @@ contract DeployDex is Script {
         console.log("ProtocolTreasury Proxy:", address(treasury));
         console.log("DexRegistry Implementation:", address(registryImplementation));
         console.log("DexRegistry Proxy:", address(registry));
-        console.log("Orderbook:", address(orderbook));
         console.log("SpotPoolFactory:", address(spotPoolFactory));
         console.log("PerpPoolFactory:", address(perpPoolFactory));
         console.log("DexPositionManager:", address(positionManager));
@@ -92,7 +92,6 @@ contract DeployDex is Script {
             address(treasury),
             address(registryImplementation),
             address(registry),
-            address(orderbook),
             address(spotPoolFactory),
             address(perpPoolFactory),
             address(positionManager)
@@ -106,7 +105,6 @@ contract DeployDex is Script {
         address treasury,
         address registryImplementation,
         address registry,
-        address orderbook,
         address spotPoolFactory,
         address perpPoolFactory,
         address positionManager
@@ -119,7 +117,6 @@ contract DeployDex is Script {
         vm.serializeAddress(obj, "protocolTreasuryProxy", treasury);
         vm.serializeAddress(obj, "dexRegistryImpl", registryImplementation);
         vm.serializeAddress(obj, "dexRegistryProxy", registry);
-        vm.serializeAddress(obj, "orderbook", orderbook);
         vm.serializeAddress(obj, "spotPoolFactory", spotPoolFactory);
         vm.serializeAddress(obj, "perpPoolFactory", perpPoolFactory);
         string memory out = vm.serializeAddress(obj, "dexPositionManager", positionManager);

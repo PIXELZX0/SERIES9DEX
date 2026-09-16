@@ -9,13 +9,14 @@ import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPool} from "../src/PerpPool.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
-import {Orderbook} from "../src/Orderbook.sol";
+import {Pair} from "../src/Pair.sol";
 import {PerpParams} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 contract PerpPoolTest is Test {
     DexRegistry internal registry;
     ProtocolTreasury internal treasury;
+    Pair internal pair;
     SpotPool internal spot;
     PerpPool internal perp;
     MockERC20 internal base; // token0
@@ -41,9 +42,7 @@ contract PerpPoolTest is Test {
                 )
             )
         );
-        Orderbook orderbook = new Orderbook(address(registry));
         vm.startPrank(owner);
-        registry.setOrderbook(address(orderbook));
         registry.setFactories(
             address(new SpotPoolFactory(address(registry))), address(new PerpPoolFactory(address(registry)))
         );
@@ -53,11 +52,10 @@ contract PerpPoolTest is Test {
         MockERC20 tokenB = new MockERC20("B", "B", 18);
         (base, quote) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
-        spot = SpotPool(registry.createSpotPool(address(base), address(quote), FEE_PPM, 1e15));
+        pair = Pair(registry.createPair(address(base), address(quote), 1e15));
+        spot = SpotPool(pair.createSpotPool(FEE_PPM));
         perp = PerpPool(
-            registry.createPerpPool(
-                address(base),
-                address(quote),
+            pair.createPerpPool(
                 address(quote),
                 address(spot),
                 FEE_PPM,
@@ -362,17 +360,11 @@ contract PerpPoolTest is Test {
     }
 
     function testCreatePerpPoolValidation() public {
-        vm.expectRevert(DexRegistry.InvalidQuoteToken.selector);
-        registry.createPerpPool(
-            address(base), address(quote), address(0xbeef), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100)
-        );
-        vm.expectRevert(DexRegistry.UnknownSpotPool.selector);
-        registry.createPerpPool(
-            address(base), address(quote), address(quote), address(0xbeef), FEE_PPM, PerpParams(10, 500, 100, 8000, 100)
-        );
-        vm.expectRevert(DexRegistry.InvalidPerpParams.selector);
-        registry.createPerpPool(
-            address(base), address(quote), address(quote), address(spot), FEE_PPM, PerpParams(51, 500, 100, 8000, 100)
-        );
+        vm.expectRevert(Pair.InvalidQuoteToken.selector);
+        pair.createPerpPool(address(0xbeef), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
+        vm.expectRevert(Pair.UnknownSpotPool.selector);
+        pair.createPerpPool(address(quote), address(0xbeef), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
+        vm.expectRevert(Pair.InvalidPerpParams.selector);
+        pair.createPerpPool(address(quote), address(spot), FEE_PPM, PerpParams(51, 500, 100, 8000, 100));
     }
 }

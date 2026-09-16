@@ -4,7 +4,7 @@ pragma solidity ^0.8.22;
 interface ISpotPool {
     function token0() external view returns (address);
     function token1() external view returns (address);
-    function pairId() external view returns (bytes32);
+    function pair() external view returns (address);
     function lpFeeRatePpm() external view returns (uint32);
     function getReserves() external view returns (uint256 reserve0, uint256 reserve1, uint64 blockTimestampLast);
     function getAmountOut(address tokenIn, uint256 amountIn) external view returns (uint256 amountOut);
@@ -24,7 +24,7 @@ interface ISpotPool {
     function swapExactIn(address tokenIn, uint256 amountIn, uint256 minAmountOut, address to)
         external
         returns (uint256 amountOut);
-    function swapFromOrderbook(address tokenIn, uint256 amountIn, uint256 minAmountOut, address to)
+    function swapFromPair(address tokenIn, uint256 amountIn, uint256 minAmountOut, address to)
         external
         returns (uint256 amountOut);
 }

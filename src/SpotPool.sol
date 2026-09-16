@@ -6,7 +6,7 @@ import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/Safe
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
 import {FeeSplit} from "./libraries/FeeSplit.sol";
-import {IOrderbook} from "./interfaces/IOrderbook.sol";
+import {IPair} from "./interfaces/IPair.sol";
 
 /// @notice UniV2-style constant-product spot pool (DEX.md §5.1). Immutable:
 /// fee rate is fixed at creation by the pool creator; the protocol cut (0.1%
@@ -26,12 +26,11 @@ contract SpotPool is ReentrancyGuard {
     uint256 public constant MAX_AUTO_FILLS = 5;
 
     address public immutable registry;
-    address public immutable orderbook;
+    address public immutable pair;
     address public immutable treasury;
     address public immutable token0;
     address public immutable token1;
     uint32 public immutable lpFeeRatePpm;
-    bytes32 public immutable pairId;
 
     uint256 public totalShares;
     mapping(address => uint256) public sharesOf;
@@ -53,7 +52,7 @@ contract SpotPool is ReentrancyGuard {
     error InsufficientLiquidity();
     error InsufficientShares();
     error SlippageExceeded();
-    error OnlyOrderbook();
+    error OnlyPair();
 
     event LiquidityAdded(
         address indexed provider, address indexed to, uint256 amount0, uint256 amount1, uint256 liquidity
@@ -68,20 +67,18 @@ contract SpotPool is ReentrancyGuard {
 
     constructor(
         address registry_,
-        address orderbook_,
+        address pair_,
         address treasury_,
         address token0_,
         address token1_,
-        uint32 lpFeeRatePpm_,
-        bytes32 pairId_
+        uint32 lpFeeRatePpm_
     ) {
         registry = registry_;
-        orderbook = orderbook_;
+        pair = pair_;
         treasury = treasury_;
         token0 = token0_;
         token1 = token1_;
         lpFeeRatePpm = lpFeeRatePpm_;
-        pairId = pairId_;
     }
 
     // ---------------------------------------------------------------- views
@@ -177,19 +174,19 @@ contract SpotPool is ReentrancyGuard {
         returns (uint256 amountOut)
     {
         amountOut = _swap(tokenIn, amountIn, minAmountOut, to);
-        if (orderbook != address(0)) {
+        if (pair != address(0)) {
             // Post-swap auto-match (DEX.md §4.2). Runs after the reentrancy
-            // lock is released so the orderbook may call swapFromOrderbook.
+            // lock is released so the pair may call swapFromPair.
             // try/catch: a failing book must never revert the swap itself.
-            try IOrderbook(orderbook).matchFromPool(pairId, MAX_AUTO_FILLS) {} catch {}
+            try IPair(pair).matchFromPool(MAX_AUTO_FILLS) {} catch {}
         }
     }
 
-    function swapFromOrderbook(address tokenIn, uint256 amountIn, uint256 minAmountOut, address to)
+    function swapFromPair(address tokenIn, uint256 amountIn, uint256 minAmountOut, address to)
         external
         returns (uint256 amountOut)
     {
-        if (msg.sender != orderbook) revert OnlyOrderbook();
+        if (msg.sender != pair) revert OnlyPair();
         // No auto-match hook here: prevents match recursion.
         amountOut = _swap(tokenIn, amountIn, minAmountOut, to);
     }

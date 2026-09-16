@@ -222,7 +222,7 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
 
     function _requirePerpPool(address pool) internal view {
         IDexRegistry reg = IDexRegistry(registry);
-        if (reg.poolPairId(pool) == bytes32(0) || reg.isSpotPool(pool)) revert UnknownPool();
+        if (reg.poolToPair(pool) == address(0) || reg.isSpotPool(pool)) revert UnknownPool();
     }
 
     // -------------------------------------------------------------- metadata
@@ -238,7 +238,7 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         _requireOwned(tokenId);
         Position memory pos = positions[tokenId];
 
-        (address tokenA, address tokenB, uint32 feePpm, bytes32 pairId) = _poolFacts(pos);
+        (address tokenA, address tokenB, uint32 feePpm, address pairAddr) = _poolFacts(pos);
         string memory symbolA = _symbolOf(tokenA);
         string memory symbolB = _symbolOf(tokenB);
         string memory kind = pos.isSpot ? "SPOT" : "PERP";
@@ -256,7 +256,7 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
             pos.isSpot ? "spot" : "perp",
             " pool. The pool holds no fungible LP token; this NFT is the only transferable claim on the underlying shares.",
             '","image":"data:image/svg+xml;base64,',
-            Base64.encode(bytes(_svg(pos.pool, kind, symbolA, symbolB, fee, pairId))),
+            Base64.encode(bytes(_svg(pos.pool, kind, symbolA, symbolB, fee, pairAddr))),
             '","attributes":[',
             '{"trait_type":"Pool Type","value":"',
             kind,
@@ -274,16 +274,16 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
     function _poolFacts(Position memory pos)
         internal
         view
-        returns (address tokenA, address tokenB, uint32 feePpm, bytes32 pairId)
+        returns (address tokenA, address tokenB, uint32 feePpm, address pairAddr)
     {
         if (pos.isSpot) {
             ISpotPool pool = ISpotPool(pos.pool);
-            return (pool.token0(), pool.token1(), pool.lpFeeRatePpm(), pool.pairId());
+            return (pool.token0(), pool.token1(), pool.lpFeeRatePpm(), pool.pair());
         }
         IPerpPool pool_ = IPerpPool(pos.pool);
         // Base first: a perp position is quoted as base-per-quote, so the pair
         // reads the same way round as the spot pool it marks against.
-        return (pool_.baseToken(), pool_.quoteToken(), pool_.lpFeeRatePpm(), pool_.pairId());
+        return (pool_.baseToken(), pool_.quoteToken(), pool_.lpFeeRatePpm(), pool_.pair());
     }
 
     /// @dev Black ground, engraved gold rosette, white type. The pair id no
@@ -296,9 +296,12 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         string memory symbolA,
         string memory symbolB,
         string memory fee,
-        bytes32 pairId
+        address pairAddr
     ) internal pure returns (string memory) {
-        uint256 seed = uint256(pairId);
+        // Full-width hash rather than a raw address cast: CREATE2-derived
+        // Pair addresses share a deployer/salt scheme and can cluster in
+        // their high bits, which would skew the `% 16`/`% 30` draws below.
+        uint256 seed = uint256(keccak256(abi.encodePacked(pairAddr)));
         return string.concat(
             "<svg xmlns='http://www.w3.org/2000/svg' width='290' height='500' viewBox='0 0 290 500'>",
             _defs(Strings.toString(36 + (seed % 16))),

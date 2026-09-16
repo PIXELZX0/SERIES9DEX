@@ -49,7 +49,7 @@ contract PerpPool is ReentrancyGuard {
     address public immutable quoteToken;
     bool public immutable baseIsToken0;
     uint32 public immutable lpFeeRatePpm;
-    bytes32 public immutable pairId;
+    address public immutable pair;
     uint32 public immutable maxLeverageX;
     uint32 public immutable maintenanceMarginBps;
     uint32 public immutable liquidationFeeBps;
@@ -117,7 +117,7 @@ contract PerpPool is ReentrancyGuard {
         address baseToken_,
         address quoteToken_,
         uint32 lpFeeRatePpm_,
-        bytes32 pairId_,
+        address pair_,
         PerpParams memory params
     ) {
         registry = registry_;
@@ -127,7 +127,7 @@ contract PerpPool is ReentrancyGuard {
         quoteToken = quoteToken_;
         baseIsToken0 = ISpotPool(spotPool_).token0() == baseToken_;
         lpFeeRatePpm = lpFeeRatePpm_;
-        pairId = pairId_;
+        pair = pair_;
         maxLeverageX = params.maxLeverageX;
         maintenanceMarginBps = params.maintenanceMarginBps;
         liquidationFeeBps = params.liquidationFeeBps;
