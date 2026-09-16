@@ -52,8 +52,8 @@ contract PerpPoolTest is Test {
         MockERC20 tokenB = new MockERC20("B", "B", 18);
         (base, quote) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
-        pair = Pair(registry.createPair(address(base), address(quote), 1e15));
-        spot = SpotPool(pair.createSpotPool(FEE_PPM));
+        pair = Pair(registry.createPair(address(base), address(quote)));
+        spot = SpotPool(pair.createSpotPool(FEE_PPM, 1e15));
         perp = PerpPool(
             pair.createPerpPool(
                 address(quote),

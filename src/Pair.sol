@@ -31,8 +31,9 @@ interface IPerpPoolFactory {
 /// `DexRegistry.createPair`. Owns everything that used to be split across
 /// `DexRegistry`'s pairId-keyed mappings and the `Orderbook` singleton's
 /// per-pair book: pool creation, the on-chain orderbook, and per-pair config
-/// (tickSize, fixed forever at construction). This contract's own address is
-/// the pair's identifier — there is no separate bytes32 pairId anymore.
+/// (tickSize, fixed forever by whoever creates the first spot pool). This
+/// contract's own address is the pair's identifier — there is no separate
+/// bytes32 pairId anymore.
 ///
 /// Matching routes across every spot pool of this pair (`spotPools`), not a
 /// single pool: each fill greedily picks whichever pool currently offers the
@@ -73,10 +74,19 @@ contract Pair is IPair, ReentrancyGuard {
     uint32 public constant MAX_LIQUIDATION_FEE_BPS = 500;
     uint64 public constant MAX_FUNDING_COEFF_PPM_PER_HOUR = 10_000;
 
+    // ponytail: hard cap on spot pools, matching-loop gas scales with this
+    uint256 public constant MAX_SPOT_POOLS = 8;
+
     address public immutable registry;
     address public immutable base; // token0, sorted
     address public immutable quote; // token1
-    uint256 public immutable tickSize; // fixed forever at construction
+    // Not immutable: unset (0) until the first createSpotPool call, which
+    // fixes it forever — mirrors the pre-Pair design where the first spot
+    // pool's creator set the tick. Keeping this decoupled from Pair's own
+    // (permissionless, parameter-free) CREATE2 creation means front-running
+    // createPair itself no longer lets an attacker squat a bad tick with a
+    // zero-liquidity, zero-cost call before anyone has created a real pool.
+    uint256 public tickSize;
 
     address[] public spotPools;
     address[] public perpPools;
@@ -106,6 +116,8 @@ contract Pair is IPair, ReentrancyGuard {
     error InvalidQuoteToken();
     error UnknownSpotPool();
     error InvalidPerpParams();
+    error TickSizeNotSet();
+    error TooManySpotPools();
 
     event SpotPoolCreated(address indexed pool, address indexed creator, uint32 lpFeeRatePpm);
     event PerpPoolCreated(address indexed pool, address indexed creator, address quoteToken, uint32 lpFeeRatePpm);
@@ -115,17 +127,24 @@ contract Pair is IPair, ReentrancyGuard {
     event OrderFilled(uint256 indexed orderId, address indexed pool, uint256 baseFilled, uint256 quoteAmount);
     event OrderClosed(uint256 indexed orderId, Status status, uint256 refunded);
 
-    constructor(address registry_, address token0_, address token1_, uint256 tickSize_) {
-        if (tickSize_ == 0) revert InvalidTickSize();
+    constructor(address registry_, address token0_, address token1_) {
         registry = registry_;
         base = token0_;
         quote = token1_;
-        tickSize = tickSize_;
     }
 
     // ---------------------------------------------------------- pool creation
 
-    function createSpotPool(uint32 lpFeeRatePpm) external returns (address pool) {
+    /// @notice The first call for a pair fixes `tickSize` forever (`tickSize_`
+    /// must be non-zero); every later call ignores its own `tickSize_` and
+    /// keeps the one already set — same rule the pre-Pair design applied to
+    /// the first spot pool created for a pairId.
+    function createSpotPool(uint32 lpFeeRatePpm, uint256 tickSize_) external returns (address pool) {
+        if (spotPools.length >= MAX_SPOT_POOLS) revert TooManySpotPools();
+        if (tickSize == 0) {
+            if (tickSize_ == 0) revert InvalidTickSize();
+            tickSize = tickSize_;
+        }
         if (lpFeeRatePpm > IDexRegistry(registry).maxLpFeeRatePpm()) revert FeeRateTooHigh();
         address factory = IDexRegistry(registry).spotPoolFactory();
         if (factory == address(0)) revert FactoryNotSet();
@@ -194,6 +213,7 @@ contract Pair is IPair, ReentrancyGuard {
         nonReentrant
         returns (uint256 orderId)
     {
+        if (tickSize == 0) revert TickSizeNotSet();
         if (priceX18 == 0 || priceX18 % tickSize != 0) revert InvalidPrice();
         if (amountBase == 0) revert InvalidAmount();
         if (expiry <= block.timestamp) revert InvalidExpiry();

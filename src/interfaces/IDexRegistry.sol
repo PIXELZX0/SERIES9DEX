@@ -10,6 +10,6 @@ interface IDexRegistry {
     function isPair(address pair) external view returns (bool);
     function poolToPair(address pool) external view returns (address);
     function getPair(address tokenA, address tokenB) external view returns (address);
-    function predictPairAddress(address tokenX, address tokenY, uint256 tickSize) external view returns (address);
+    function predictPairAddress(address tokenX, address tokenY) external view returns (address);
     function registerPool(address pool, bool isSpot) external;
 }

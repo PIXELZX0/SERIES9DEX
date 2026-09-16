@@ -32,7 +32,7 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     event FactoriesSet(address indexed spotPoolFactory, address indexed perpPoolFactory);
     event MaxLpFeeRateSet(uint32 previousPpm, uint32 newPpm);
-    event PairCreated(address indexed pair, address indexed token0, address indexed token1, uint256 tickSize);
+    event PairCreated(address indexed pair, address indexed token0, address indexed token1);
     event PoolRegistered(address indexed pair, address indexed pool, bool isSpot);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -63,15 +63,19 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     // --------------------------------------------------------- pair creation
 
-    function createPair(address tokenX, address tokenY, uint256 tickSize) external returns (address pair) {
+    /// @notice Deploys the Pair itself — no tick, no pool. Tick is fixed
+    /// later, by whoever creates the pair's first spot pool (`Pair.
+    /// createSpotPool`), so this call carries no creator-chosen value an
+    /// attacker could front-run for and lock in for free.
+    function createPair(address tokenX, address tokenY) external returns (address pair) {
         (address token0, address token1) = PairKey.sort(tokenX, tokenY);
         bytes32 key = PairKey.pairId(token0, token1);
         if (_getPair[key] != address(0)) revert PairAlreadyExists();
 
-        pair = address(new Pair{salt: key}(address(this), token0, token1, tickSize));
+        pair = address(new Pair{salt: key}(address(this), token0, token1));
         _getPair[key] = pair;
         isPair[pair] = true;
-        emit PairCreated(pair, token0, token1, tickSize);
+        emit PairCreated(pair, token0, token1);
     }
 
     /// @notice Called by a legitimate Pair when it deploys a pool, so
@@ -91,11 +95,11 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         return _getPair[PairKey.pairId(t0, t1)];
     }
 
-    function predictPairAddress(address tokenX, address tokenY, uint256 tickSize) external view returns (address) {
+    function predictPairAddress(address tokenX, address tokenY) external view returns (address) {
         (address t0, address t1) = PairKey.sort(tokenX, tokenY);
         bytes32 salt = PairKey.pairId(t0, t1);
         bytes32 initCodeHash =
-            keccak256(abi.encodePacked(type(Pair).creationCode, abi.encode(address(this), t0, t1, tickSize)));
+            keccak256(abi.encodePacked(type(Pair).creationCode, abi.encode(address(this), t0, t1)));
         return Create2.computeAddress(salt, initCodeHash);
     }
 

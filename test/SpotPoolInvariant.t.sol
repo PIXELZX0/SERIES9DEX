@@ -89,8 +89,8 @@ contract SpotPoolInvariantTest is Test {
 
         MockERC20 tokenA = new MockERC20("A", "A", 18);
         MockERC20 tokenB = new MockERC20("B", "B", 18);
-        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB), 1e15));
-        pool = SpotPool(pair.createSpotPool(3000));
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        pool = SpotPool(pair.createSpotPool(3000, 1e15));
         token0 = MockERC20(pool.token0());
         token1 = MockERC20(pool.token1());
 

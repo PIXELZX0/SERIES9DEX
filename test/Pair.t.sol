@@ -50,8 +50,8 @@ contract PairTest is Test {
         MockERC20 tokenB = new MockERC20("B", "B", 18);
         (base, quote) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
-        pair = Pair(registry.createPair(address(base), address(quote), TICK));
-        pool = SpotPool(pair.createSpotPool(FEE_PPM));
+        pair = Pair(registry.createPair(address(base), address(quote)));
+        pool = SpotPool(pair.createSpotPool(FEE_PPM, TICK));
         expiry = uint64(block.timestamp + 1 days);
 
         address[3] memory users = [maker, taker, lp];
@@ -301,7 +301,7 @@ contract PairTest is Test {
     function testMatchSellSplitsAcrossPools() public {
         // Second pool, same fee/depth as the first — the greedy router should
         // exhaust one pool down to the limit price, then hop to the other.
-        address pool2Addr = pair.createSpotPool(FEE_PPM);
+        address pool2Addr = pair.createSpotPool(FEE_PPM, TICK);
         SpotPool pool2 = SpotPool(pool2Addr);
         vm.startPrank(lp);
         base.approve(pool2Addr, type(uint256).max);
@@ -328,7 +328,7 @@ contract PairTest is Test {
     }
 
     function testMatchBuySplitsAcrossPools() public {
-        address pool2Addr = pair.createSpotPool(FEE_PPM);
+        address pool2Addr = pair.createSpotPool(FEE_PPM, TICK);
         SpotPool pool2 = SpotPool(pool2Addr);
         vm.startPrank(lp);
         base.approve(pool2Addr, type(uint256).max);

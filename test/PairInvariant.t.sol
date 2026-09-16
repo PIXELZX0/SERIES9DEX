@@ -30,7 +30,7 @@ contract PairHandler is Test {
         // route/split across pools rather than degenerate to a single one.
         uint32[2] memory fees = [uint32(3000), uint32(5000)];
         for (uint256 i = 0; i < fees.length; i++) {
-            SpotPool p = SpotPool(pair_.createSpotPool(fees[i]));
+            SpotPool p = SpotPool(pair_.createSpotPool(fees[i], 1e15));
             base.approve(address(p), type(uint256).max);
             quote.approve(address(p), type(uint256).max);
             base.mint(address(this), 1000 ether);
@@ -113,7 +113,7 @@ contract PairInvariantTest is Test {
 
         MockERC20 tokenA = new MockERC20("A", "A", 18);
         MockERC20 tokenB = new MockERC20("B", "B", 18);
-        pair = Pair(registry.createPair(address(tokenA), address(tokenB), 1e15));
+        pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
         base = MockERC20(pair.base());
         quote = MockERC20(pair.quote());
 

@@ -6,6 +6,7 @@ import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC19
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
 import {DexRegistry} from "../src/DexRegistry.sol";
 import {Pair} from "../src/Pair.sol";
+import {IPair} from "../src/interfaces/IPair.sol";
 import {ProtocolTreasury} from "../src/ProtocolTreasury.sol";
 import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
@@ -63,7 +64,7 @@ contract DexRegistryTest is Test {
     // -------------------------------------------------------- pair creation
 
     function testCreatePairAndSpotPool() public {
-        address pairAddr = registry.createPair(address(tokenA), address(tokenB), 1e15);
+        address pairAddr = registry.createPair(address(tokenA), address(tokenB));
         (address t0, address t1) = _sorted();
         Pair pair = Pair(pairAddr);
         assertEq(pair.base(), t0);
@@ -71,27 +72,29 @@ contract DexRegistryTest is Test {
         assertEq(registry.getPair(address(tokenA), address(tokenB)), pairAddr);
         assertTrue(registry.isPair(pairAddr));
 
-        address poolXY = pair.createSpotPool(3000);
+        address poolXY = pair.createSpotPool(3000, 1e15);
         assertEq(registry.poolToPair(poolXY), pairAddr);
         assertEq(SpotPool(poolXY).token0(), t0);
         assertEq(SpotPool(poolXY).token1(), t1);
         assertTrue(registry.isSpotPool(poolXY));
+        assertEq(pair.tickSize(), 1e15);
 
-        // Second pool, different fee, same pair.
-        address poolXY2 = pair.createSpotPool(5000);
+        // Second pool, different fee, same pair; its tick arg is ignored.
+        address poolXY2 = pair.createSpotPool(5000, 999);
         assertEq(registry.poolToPair(poolXY2), pairAddr);
         assertEq(pair.spotPoolsLength(), 2);
+        assertEq(pair.tickSize(), 1e15);
     }
 
     function testCreatePairDedupReverts() public {
-        registry.createPair(address(tokenA), address(tokenB), 1e15);
+        registry.createPair(address(tokenA), address(tokenB));
         vm.expectRevert(DexRegistry.PairAlreadyExists.selector);
-        registry.createPair(address(tokenB), address(tokenA), 1e15); // reversed order, same pair
+        registry.createPair(address(tokenB), address(tokenA)); // reversed order, same pair
     }
 
     function testGetPairAndPredictRoundTrip() public {
-        address predicted = registry.predictPairAddress(address(tokenA), address(tokenB), 1e15);
-        address pairAddr = registry.createPair(address(tokenA), address(tokenB), 1e15);
+        address predicted = registry.predictPairAddress(address(tokenA), address(tokenB));
+        address pairAddr = registry.createPair(address(tokenA), address(tokenB));
         assertEq(pairAddr, predicted);
         assertEq(registry.getPair(address(tokenA), address(tokenB)), pairAddr);
         assertEq(registry.getPair(address(tokenB), address(tokenA)), pairAddr);
@@ -104,27 +107,48 @@ contract DexRegistryTest is Test {
 
     function testCreatePairSelfPairReverts() public {
         vm.expectRevert(PairKey.IdenticalTokens.selector);
-        registry.createPair(address(tokenA), address(tokenA), 1e15);
+        registry.createPair(address(tokenA), address(tokenA));
     }
 
     function testCreatePairZeroTokenReverts() public {
         vm.expectRevert(PairKey.ZeroToken.selector);
-        registry.createPair(address(tokenA), address(0), 1e15);
+        registry.createPair(address(tokenA), address(0));
     }
 
     function testCreateSpotPoolFeeGuardrail() public {
-        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB), 1e15));
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
         // 5% boundary passes, above reverts.
-        pair.createSpotPool(50_000);
+        pair.createSpotPool(50_000, 1e15);
         vm.expectRevert(Pair.FeeRateTooHigh.selector);
-        pair.createSpotPool(50_001);
+        pair.createSpotPool(50_001, 1e15);
     }
 
     function testCreatePerpPoolRequiresFactory() public {
-        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB), 1e15));
-        address spot = pair.createSpotPool(3000);
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        address spot = pair.createSpotPool(3000, 1e15);
         vm.expectRevert(Pair.FactoryNotSet.selector);
         pair.createPerpPool(address(tokenA), spot, 3000, _defaultPerpParams());
+    }
+
+    function testCreateSpotPoolRequiresTickOnFirstCall() public {
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        vm.expectRevert(Pair.InvalidTickSize.selector);
+        pair.createSpotPool(3000, 0);
+    }
+
+    function testCreateSpotPoolCapsPoolCount() public {
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        for (uint32 i = 0; i < pair.MAX_SPOT_POOLS(); i++) {
+            pair.createSpotPool(1000 + i, 1e15);
+        }
+        vm.expectRevert(Pair.TooManySpotPools.selector);
+        pair.createSpotPool(2000, 1e15);
+    }
+
+    function testPlaceOrderRequiresTickSizeSet() public {
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        vm.expectRevert(Pair.TickSizeNotSet.selector);
+        pair.placeOrder(IPair.Side.SELL, 1e15, 1 ether, uint64(block.timestamp + 1 days), 0);
     }
 
     // ----------------------------------------------------------------- admin
