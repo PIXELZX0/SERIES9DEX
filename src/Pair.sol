@@ -74,6 +74,11 @@ contract Pair is IPair, ReentrancyGuard {
     uint32 public constant MAX_LIQUIDATION_FEE_BPS = 500;
     uint64 public constant MAX_FUNDING_COEFF_PPM_PER_HOUR = 10_000;
 
+    // Protocol-wide fee-rate bounds, both spot and perp: no governance knob,
+    // same hardcoded range every pair gets.
+    uint32 public constant MIN_LP_FEE_PPM = 1;
+    uint32 public constant MAX_LP_FEE_PPM = 10_000;
+
     // ponytail: hard cap on spot pools, matching-loop gas scales with this
     uint256 public constant MAX_SPOT_POOLS = 8;
 
@@ -91,6 +96,11 @@ contract Pair is IPair, ReentrancyGuard {
     address[] public spotPools;
     address[] public perpPools;
     mapping(address => bool) public isSpotPool;
+    mapping(uint32 => bool) public spotFeeUsed;
+    // Perp markets vary by quoteToken too (base/quote roles flip), so the
+    // same fee is fine on two perp pools quoted in different tokens — only
+    // dedup within a given quoteToken.
+    mapping(address => mapping(uint32 => bool)) public perpFeeUsed;
 
     uint256 public bestBidPrice; // highest bid, 0 = empty
     uint256 public bestAskPrice; // lowest ask, 0 = empty
@@ -111,7 +121,8 @@ contract Pair is IPair, ReentrancyGuard {
     error OrderNotOpen();
     error OrderNotExpired();
     error OnlySpotPool();
-    error FeeRateTooHigh();
+    error InvalidFeeRate();
+    error DuplicateFeeRate();
     error FactoryNotSet();
     error InvalidQuoteToken();
     error UnknownSpotPool();
@@ -145,12 +156,14 @@ contract Pair is IPair, ReentrancyGuard {
             if (tickSize_ == 0) revert InvalidTickSize();
             tickSize = tickSize_;
         }
-        if (lpFeeRatePpm > IDexRegistry(registry).maxLpFeeRatePpm()) revert FeeRateTooHigh();
+        if (lpFeeRatePpm < MIN_LP_FEE_PPM || lpFeeRatePpm > MAX_LP_FEE_PPM) revert InvalidFeeRate();
+        if (spotFeeUsed[lpFeeRatePpm]) revert DuplicateFeeRate();
         address factory = IDexRegistry(registry).spotPoolFactory();
         if (factory == address(0)) revert FactoryNotSet();
         pool = ISpotPoolFactory(factory).deploy(IDexRegistry(registry).treasury(), base, quote, lpFeeRatePpm);
         spotPools.push(pool);
         isSpotPool[pool] = true;
+        spotFeeUsed[lpFeeRatePpm] = true;
         IDexRegistry(registry).registerPool(pool, true);
         emit SpotPoolCreated(pool, msg.sender, lpFeeRatePpm);
     }
@@ -159,9 +172,10 @@ contract Pair is IPair, ReentrancyGuard {
         external
         returns (address pool)
     {
-        if (lpFeeRatePpm > IDexRegistry(registry).maxLpFeeRatePpm()) revert FeeRateTooHigh();
+        if (lpFeeRatePpm < MIN_LP_FEE_PPM || lpFeeRatePpm > MAX_LP_FEE_PPM) revert InvalidFeeRate();
         if (quoteToken != base && quoteToken != quote) revert InvalidQuoteToken();
         if (!isSpotPool[spotPool]) revert UnknownSpotPool();
+        if (perpFeeUsed[quoteToken][lpFeeRatePpm]) revert DuplicateFeeRate();
         if (
             params.maxLeverageX == 0 || params.maxLeverageX > MAX_LEVERAGE_CAP
                 || params.maintenanceMarginBps < MIN_MAINTENANCE_MARGIN_BPS
@@ -177,6 +191,7 @@ contract Pair is IPair, ReentrancyGuard {
             IDexRegistry(registry).treasury(), spotPool, baseToken, quoteToken, lpFeeRatePpm, params
         );
         perpPools.push(pool);
+        perpFeeUsed[quoteToken][lpFeeRatePpm] = true;
         IDexRegistry(registry).registerPool(pool, false);
         emit PerpPoolCreated(pool, msg.sender, quoteToken, lpFeeRatePpm);
     }

@@ -18,7 +18,6 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     address public treasury;
     address public spotPoolFactory;
     address public perpPoolFactory;
-    uint32 public maxLpFeeRatePpm;
 
     mapping(bytes32 => address) internal _getPair; // sorted-token-hash -> Pair address (internal lookup/salt key only)
     mapping(address => bool) public isPair;
@@ -31,7 +30,6 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     error OnlyPair();
 
     event FactoriesSet(address indexed spotPoolFactory, address indexed perpPoolFactory);
-    event MaxLpFeeRateSet(uint32 previousPpm, uint32 newPpm);
     event PairCreated(address indexed pair, address indexed token0, address indexed token1);
     event PoolRegistered(address indexed pair, address indexed pool, bool isSpot);
 
@@ -44,7 +42,6 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         if (treasury_ == address(0)) revert ZeroAddress();
         __Ownable_init(initialOwner);
         treasury = treasury_;
-        maxLpFeeRatePpm = 50_000; // 5%
     }
 
     // ---------------------------------------------------------------- admin
@@ -54,11 +51,6 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         spotPoolFactory = spotPoolFactory_;
         perpPoolFactory = perpPoolFactory_; // zero allowed: perp creation disabled
         emit FactoriesSet(spotPoolFactory_, perpPoolFactory_);
-    }
-
-    function setMaxLpFeeRate(uint32 ppm) external onlyOwner {
-        emit MaxLpFeeRateSet(maxLpFeeRatePpm, ppm);
-        maxLpFeeRatePpm = ppm;
     }
 
     // --------------------------------------------------------- pair creation

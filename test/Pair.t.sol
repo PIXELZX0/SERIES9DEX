@@ -299,9 +299,11 @@ contract PairTest is Test {
     // ---------------------------------------------------- multi-pool routing
 
     function testMatchSellSplitsAcrossPools() public {
-        // Second pool, same fee/depth as the first — the greedy router should
-        // exhaust one pool down to the limit price, then hop to the other.
-        address pool2Addr = pair.createSpotPool(FEE_PPM, TICK);
+        // Second pool, same depth as the first (fee must differ, at least by
+        // 1ppm, to satisfy the one-pool-per-fee rule — negligible for the
+        // routing math below) — the greedy router should exhaust one pool
+        // down to the limit price, then hop to the other.
+        address pool2Addr = pair.createSpotPool(FEE_PPM + 1, TICK);
         SpotPool pool2 = SpotPool(pool2Addr);
         vm.startPrank(lp);
         base.approve(pool2Addr, type(uint256).max);
@@ -328,7 +330,7 @@ contract PairTest is Test {
     }
 
     function testMatchBuySplitsAcrossPools() public {
-        address pool2Addr = pair.createSpotPool(FEE_PPM, TICK);
+        address pool2Addr = pair.createSpotPool(FEE_PPM + 1, TICK);
         SpotPool pool2 = SpotPool(pool2Addr);
         vm.startPrank(lp);
         base.approve(pool2Addr, type(uint256).max);

@@ -365,6 +365,14 @@ contract PerpPoolTest is Test {
         vm.expectRevert(Pair.UnknownSpotPool.selector);
         pair.createPerpPool(address(quote), address(0xbeef), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
         vm.expectRevert(Pair.InvalidPerpParams.selector);
-        pair.createPerpPool(address(quote), address(spot), FEE_PPM, PerpParams(51, 500, 100, 8000, 100));
+        pair.createPerpPool(address(quote), address(spot), FEE_PPM + 1, PerpParams(51, 500, 100, 8000, 100));
+    }
+
+    function testCreatePerpPoolDuplicateFeeReverts() public {
+        // setUp already created a FEE_PPM perp quoted in `quote`.
+        vm.expectRevert(Pair.DuplicateFeeRate.selector);
+        pair.createPerpPool(address(quote), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
+        // Same fee, opposite quoteToken: distinct market, must succeed.
+        pair.createPerpPool(address(base), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
     }
 }

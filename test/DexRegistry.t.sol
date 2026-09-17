@@ -117,10 +117,20 @@ contract DexRegistryTest is Test {
 
     function testCreateSpotPoolFeeGuardrail() public {
         Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
-        // 5% boundary passes, above reverts.
-        pair.createSpotPool(50_000, 1e15);
-        vm.expectRevert(Pair.FeeRateTooHigh.selector);
-        pair.createSpotPool(50_001, 1e15);
+        // 1ppm and 10,000ppm boundaries pass, outside them reverts.
+        pair.createSpotPool(1, 1e15);
+        pair.createSpotPool(10_000, 1e15);
+        vm.expectRevert(Pair.InvalidFeeRate.selector);
+        pair.createSpotPool(0, 1e15);
+        vm.expectRevert(Pair.InvalidFeeRate.selector);
+        pair.createSpotPool(10_001, 1e15);
+    }
+
+    function testCreateSpotPoolDuplicateFeeReverts() public {
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        pair.createSpotPool(3000, 1e15);
+        vm.expectRevert(Pair.DuplicateFeeRate.selector);
+        pair.createSpotPool(3000, 1e15);
     }
 
     function testCreatePerpPoolRequiresFactory() public {
@@ -154,12 +164,9 @@ contract DexRegistryTest is Test {
     // ----------------------------------------------------------------- admin
 
     function testAdminOnlyOwner() public {
-        vm.startPrank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, stranger));
-        registry.setMaxLpFeeRate(1);
+        vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, stranger));
         registry.setFactories(address(1), address(0));
-        vm.stopPrank();
     }
 
     function testFactoryOnlyPair() public {

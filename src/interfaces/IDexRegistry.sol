@@ -5,7 +5,6 @@ interface IDexRegistry {
     function treasury() external view returns (address);
     function spotPoolFactory() external view returns (address);
     function perpPoolFactory() external view returns (address);
-    function maxLpFeeRatePpm() external view returns (uint32);
     function isSpotPool(address pool) external view returns (bool);
     function isPair(address pair) external view returns (bool);
     function poolToPair(address pool) external view returns (address);
