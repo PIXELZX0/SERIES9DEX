@@ -16,6 +16,8 @@ import {PerpParams} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 contract DexPositionManagerTest is Test {
+    uint256 internal constant DEADLINE = type(uint256).max;
+
     DexRegistry internal registry;
     DexPositionManager internal manager;
     Pair internal pair;
@@ -95,7 +97,8 @@ contract DexPositionManagerTest is Test {
 
     function test_mintSpot_mintsNftBackedByPoolShares() public {
         vm.prank(alice);
-        (uint256 tokenId, uint256 liquidity) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 tokenId, uint256 liquidity) =
+            manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
 
         assertEq(tokenId, 1);
         assertEq(manager.ownerOf(tokenId), alice);
@@ -110,13 +113,13 @@ contract DexPositionManagerTest is Test {
 
     function test_mintSpot_refundsUnusedToken() public {
         vm.prank(alice);
-        manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
 
         // Second mint at a 1:1 ratio: the pool takes only the ratio-optimal
         // amount, the rest must come back rather than sit in the manager.
         uint256 balanceBefore = quote.balanceOf(bob);
         vm.prank(bob);
-        manager.mintSpot(address(spot), 100 ether, 4000 ether, 0, 0, bob);
+        manager.mintSpot(address(spot), 100 ether, 4000 ether, 0, 0, bob, DEADLINE);
 
         assertEq(quote.balanceOf(bob), balanceBefore - 400 ether);
         assertEq(base.balanceOf(address(manager)), 0);
@@ -125,7 +128,8 @@ contract DexPositionManagerTest is Test {
 
     function test_transferNft_transfersWithdrawalRight() public {
         vm.prank(alice);
-        (uint256 tokenId, uint256 liquidity) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 tokenId, uint256 liquidity) =
+            manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
 
         vm.prank(alice);
         manager.transferFrom(alice, bob, tokenId);
@@ -133,26 +137,27 @@ contract DexPositionManagerTest is Test {
         // Old owner can no longer withdraw.
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.NotAuthorized.selector);
-        manager.decreaseSpot(tokenId, liquidity, 0, 0, alice);
+        manager.decreaseSpot(tokenId, liquidity, 0, 0, alice, DEADLINE);
 
         uint256 baseBefore = base.balanceOf(bob);
         vm.prank(bob);
-        (uint256 amount0,) = manager.decreaseSpot(tokenId, liquidity, 0, 0, bob);
+        (uint256 amount0,) = manager.decreaseSpot(tokenId, liquidity, 0, 0, bob, DEADLINE);
         assertGt(amount0, 0);
         assertEq(base.balanceOf(bob), baseBefore + amount0);
     }
 
     function test_increaseSpot_thenDecreasePartially() public {
         vm.prank(alice);
-        (uint256 tokenId, uint256 liquidity) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 tokenId, uint256 liquidity) =
+            manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
 
         vm.prank(alice);
-        uint256 added = manager.increaseSpot(tokenId, 1000 ether, 4000 ether, 0, 0);
+        uint256 added = manager.increaseSpot(tokenId, 1000 ether, 4000 ether, 0, 0, DEADLINE);
         (,, uint256 recorded) = manager.positions(tokenId);
         assertEq(recorded, liquidity + added);
 
         vm.prank(alice);
-        manager.decreaseSpot(tokenId, added, 0, 0, alice);
+        manager.decreaseSpot(tokenId, added, 0, 0, alice, DEADLINE);
         (,, recorded) = manager.positions(tokenId);
         assertEq(recorded, liquidity);
         assertEq(spot.sharesOf(address(manager)), liquidity);
@@ -160,19 +165,21 @@ contract DexPositionManagerTest is Test {
 
     function test_decreaseSpot_revertsAboveRecordedLiquidity() public {
         vm.prank(alice);
-        (uint256 aliceId, uint256 aliceLiquidity) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 aliceId, uint256 aliceLiquidity) =
+            manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
         vm.prank(bob);
-        manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, bob);
+        manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, bob, DEADLINE);
 
         // Bob's shares sit in the same manager; Alice must not reach them.
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.InsufficientPositionLiquidity.selector);
-        manager.decreaseSpot(aliceId, aliceLiquidity + 1, 0, 0, alice);
+        manager.decreaseSpot(aliceId, aliceLiquidity + 1, 0, 0, alice, DEADLINE);
     }
 
     function test_spotPositionAccruesFeesWithoutCollect() public {
         vm.prank(alice);
-        (uint256 tokenId, uint256 liquidity) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 tokenId, uint256 liquidity) =
+            manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
 
         vm.startPrank(bob);
         base.approve(address(spot), type(uint256).max);
@@ -182,7 +189,7 @@ contract DexPositionManagerTest is Test {
         vm.stopPrank();
 
         vm.prank(alice);
-        (uint256 amount0, uint256 amount1) = manager.decreaseSpot(tokenId, liquidity, 0, 0, alice);
+        (uint256 amount0, uint256 amount1) = manager.decreaseSpot(tokenId, liquidity, 0, 0, alice, DEADLINE);
         // Fees compounded into reserves, so the same shares redeem for more.
         assertGt(amount0 + amount1 / 4, 1000 ether + 4000 ether / 4);
     }
@@ -191,7 +198,7 @@ contract DexPositionManagerTest is Test {
 
     function test_mintPerp_andDecrease() public {
         vm.prank(alice);
-        (uint256 tokenId, uint256 shares) = manager.mintPerp(address(perp), 100_000 ether, 0, alice);
+        (uint256 tokenId, uint256 shares) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
 
         assertEq(manager.ownerOf(tokenId), alice);
         (address pool, bool isSpot, uint256 recorded) = manager.positions(tokenId);
@@ -202,34 +209,35 @@ contract DexPositionManagerTest is Test {
 
         uint256 quoteBefore = quote.balanceOf(alice);
         vm.prank(alice);
-        uint256 quoteOut = manager.decreasePerp(tokenId, shares, 0, alice);
-        assertEq(quoteOut, 100_000 ether);
+        uint256 quoteOut = manager.decreasePerp(tokenId, shares, 0, alice, DEADLINE);
+        // Everything but the MINIMUM_LIQUIDITY the pool burned on first deposit.
+        assertEq(quoteOut, 100_000 ether - perp.MINIMUM_LIQUIDITY());
         assertEq(quote.balanceOf(alice), quoteBefore + quoteOut);
     }
 
     function test_perpAndSpotEntryPointsAreNotInterchangeable() public {
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.UnknownPool.selector);
-        manager.mintPerp(address(spot), 1000 ether, 0, alice);
+        manager.mintPerp(address(spot), 1000 ether, 0, alice, DEADLINE);
 
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.UnknownPool.selector);
-        manager.mintSpot(address(perp), 1000 ether, 1000 ether, 0, 0, alice);
+        manager.mintSpot(address(perp), 1000 ether, 1000 ether, 0, 0, alice, DEADLINE);
 
         vm.prank(alice);
-        (uint256 tokenId,) = manager.mintPerp(address(perp), 100_000 ether, 0, alice);
+        (uint256 tokenId,) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.WrongPoolKind.selector);
-        manager.decreaseSpot(tokenId, 1, 0, 0, alice);
+        manager.decreaseSpot(tokenId, 1, 0, 0, alice, DEADLINE);
     }
 
     // -------------------------------------------------- no fungible LP token
 
     function test_poolsExposeNoErc20Surface() public {
         vm.prank(alice);
-        manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
         vm.prank(alice);
-        manager.mintPerp(address(perp), 100_000 ether, 0, alice);
+        manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
 
         // The share ledger must not be reachable as a token: no transfer, no
         // approve, no allowance, no ERC-20 metadata on either pool.
@@ -279,21 +287,22 @@ contract DexPositionManagerTest is Test {
         SpotPool rogue = new SpotPool(address(registry), address(0), address(0), address(base), address(quote), FEE_PPM);
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.UnknownPool.selector);
-        manager.mintSpot(address(rogue), 1000 ether, 4000 ether, 0, 0, alice);
+        manager.mintSpot(address(rogue), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
     }
 
     // ------------------------------------------------------------------ burn
 
     function test_burn_onlyWhenEmpty() public {
         vm.prank(alice);
-        (uint256 tokenId, uint256 liquidity) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 tokenId, uint256 liquidity) =
+            manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
 
         vm.prank(alice);
         vm.expectRevert(DexPositionManager.PositionNotEmpty.selector);
         manager.burn(tokenId);
 
         vm.prank(alice);
-        manager.decreaseSpot(tokenId, liquidity, 0, 0, alice);
+        manager.decreaseSpot(tokenId, liquidity, 0, 0, alice, DEADLINE);
         vm.prank(alice);
         manager.burn(tokenId);
 
@@ -305,7 +314,7 @@ contract DexPositionManagerTest is Test {
 
     function test_tokenURI_isFullyOnChain() public {
         vm.prank(alice);
-        (uint256 tokenId,) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 tokenId,) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
 
         string memory uri = manager.tokenURI(tokenId);
         assertEq(_prefix(uri, 29), "data:application/json;base64,");
@@ -315,9 +324,9 @@ contract DexPositionManagerTest is Test {
 
     function test_tokenURI_perpCardDiffersFromSpot() public {
         vm.prank(alice);
-        (uint256 spotId,) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice);
+        (uint256 spotId,) = manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
         vm.prank(alice);
-        (uint256 perpId,) = manager.mintPerp(address(perp), 100_000 ether, 0, alice);
+        (uint256 perpId,) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
 
         assertTrue(
             keccak256(bytes(manager.tokenURI(spotId))) != keccak256(bytes(manager.tokenURI(perpId))),
@@ -360,7 +369,7 @@ contract DexPositionManagerTest is Test {
         vm.startPrank(alice);
         hostile.approve(address(manager), type(uint256).max);
         noSymbol.approve(address(manager), type(uint256).max);
-        (uint256 tokenId,) = manager.mintSpot(address(hostilePool), 100 ether, 100 ether, 0, 0, alice);
+        (uint256 tokenId,) = manager.mintSpot(address(hostilePool), 100 ether, 100 ether, 0, 0, alice, DEADLINE);
         vm.stopPrank();
 
         string memory uri = manager.tokenURI(tokenId);
@@ -421,6 +430,39 @@ contract DexPositionManagerTest is Test {
             if (b[i] >= 0x41 && b[i] <= 0x5A) b[i] = bytes1(uint8(b[i]) + 32);
         }
         return string(b);
+    }
+
+    // -------------------------------------------------------------- deadline
+
+    /// The pools carry no deadline of their own, so without one here a
+    /// transaction left unmined can land at any later block. The min-amount
+    /// arguments bound the price, not when it is paid.
+    function testDeadlineEnforcedOnEveryEntryPoint() public {
+        vm.warp(1_000);
+        uint256 stale = block.timestamp - 1;
+
+        vm.startPrank(alice);
+        vm.expectRevert(DexPositionManager.Expired.selector);
+        manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, stale);
+        vm.expectRevert(DexPositionManager.Expired.selector);
+        manager.mintPerp(address(perp), 1000 ether, 0, alice, stale);
+
+        (uint256 spotId, uint256 liquidity) =
+            manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
+        (uint256 perpId, uint256 shares) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
+
+        vm.expectRevert(DexPositionManager.Expired.selector);
+        manager.increaseSpot(spotId, 1 ether, 4 ether, 0, 0, stale);
+        vm.expectRevert(DexPositionManager.Expired.selector);
+        manager.decreaseSpot(spotId, liquidity, 0, 0, alice, stale);
+        vm.expectRevert(DexPositionManager.Expired.selector);
+        manager.increasePerp(perpId, 1 ether, 0, stale);
+        vm.expectRevert(DexPositionManager.Expired.selector);
+        manager.decreasePerp(perpId, shares, 0, alice, stale);
+
+        // The current block still works, so the guard is on staleness only.
+        manager.decreaseSpot(spotId, liquidity, 0, 0, alice, block.timestamp);
+        vm.stopPrank();
     }
 }
 

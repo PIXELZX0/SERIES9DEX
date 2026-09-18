@@ -151,7 +151,9 @@ contract PerpPoolTest is Test {
 
     function testLpSharesPriceAgainstEquity() public {
         _warmMark();
-        assertEq(perp.sharesOf(lp), 100_000 ether); // 1:1 initial
+        // 1:1 initial, less the MINIMUM_LIQUIDITY burned to 0xdead.
+        assertEq(perp.sharesOf(lp), 100_000 ether - perp.MINIMUM_LIQUIDITY());
+        assertEq(perp.sharesOf(address(0xdead)), perp.MINIMUM_LIQUIDITY());
         vm.prank(keeper);
         uint256 shares = perp.addLiquidity(50_000 ether, 0, keeper);
         assertEq(shares, 50_000 ether); // no PnL => still 1:1
@@ -159,6 +161,28 @@ contract PerpPoolTest is Test {
         uint256 out = perp.removeLiquidity(shares, 0, keeper);
         assertEq(out, 50_000 ether);
         _invariantHolds();
+    }
+
+    function testFirstDepositBurnsMinimumLiquidity() public {
+        // A fresh vault: a dust first deposit cannot mint against nothing and
+        // set the share price for everyone after it.
+        PerpPool fresh = PerpPool(
+            pair.createPerpPool(address(quote), address(spot), FEE_PPM + 7, PerpParams(10, 500, 100, 8000, 100))
+        );
+        // Read before arming expectRevert: a getter call in the argument list
+        // is itself the "next call" and would soak up the expectation.
+        uint256 floor = fresh.MINIMUM_LIQUIDITY();
+
+        vm.startPrank(lp);
+        quote.approve(address(fresh), type(uint256).max);
+        vm.expectRevert(PerpPool.InsufficientLiquidity.selector);
+        fresh.addLiquidity(floor, 0, lp);
+
+        uint256 shares = fresh.addLiquidity(10_000 ether, 0, lp);
+        vm.stopPrank();
+        assertEq(shares, 10_000 ether - floor);
+        assertEq(fresh.totalShares(), 10_000 ether);
+        assertEq(fresh.sharesOf(address(0xdead)), floor);
     }
 
     function testRemoveLiquidityUtilizationGuard() public {

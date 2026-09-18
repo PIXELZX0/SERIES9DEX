@@ -20,15 +20,16 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
         with:
           # Pinned, not `stable`: the action resolves `stable` at run time, so
-          # every job silently picks up whatever Foundry shipped that morning.
-          # v1.8.3's post-build lint pass hangs on this project (compiles fine,
-          # then spins until the runner drops the job), which is exactly how
-          # CI broke without a single commit touching it.
-          version: v1.5.1
+          # every job silently picks up whatever Foundry shipped that morning,
+          # which is how CI broke with no commit touching it.
+          #
+          # The compiler is pinned separately in foundry.toml, so this version
+          # does not decide the deployed bytecode — verified identical under
+          # v1.5.1 and v1.8.3 for all nine deployable contracts.
+          version: v1.8.3
 
       - name: Check formatting
         run: forge fmt --check
-        continue-on-error: true
 
       - name: Build
         run: forge build
@@ -36,6 +37,7 @@ jobs:
       - name: Test
         run: forge test -vvv
 
+      # Blocking: .gas-snapshot is committed, so a drift here means either a
+      # gas change nobody looked at or a stale snapshot. Both want a human.
       - name: Gas snapshot check
         run: forge snapshot --check
-        continue-on-error: true

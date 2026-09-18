@@ -65,6 +65,7 @@ contract SpotPool is ReentrancyGuard {
         address indexed sender, address indexed to, address indexed tokenIn, uint256 amountIn, uint256 amountOut
     );
     event ProtocolFeesCollected(uint256 amount0, uint256 amount1);
+    event Skimmed(address indexed to, uint256 amount0, uint256 amount1);
 
     constructor(
         address registry_,
@@ -234,6 +235,26 @@ contract SpotPool is ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------ fees
+
+    /// @notice Send any balance the pool is not accounting for to `to`.
+    /// Reserves only move through this contract's own bookkeeping, so a
+    /// surplus is a direct transfer someone made to the pool — without this it
+    /// sits here forever, owned by nobody.
+    ///
+    /// Subtracts the accrued protocol fees as well as the reserves: those are
+    /// held in the pool's balance but are not part of it, and skimming them
+    /// would be stealing from the treasury.
+    ///
+    /// Permissionless and unrestricted in `to`, as in UniswapV2 — a donation
+    /// to a pool is finders-keepers, not a claim.
+    function skim(address to) external nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        uint256 surplus0 = IERC20(token0).balanceOf(address(this)) - reserve0 - protocolFees0;
+        uint256 surplus1 = IERC20(token1).balanceOf(address(this)) - reserve1 - protocolFees1;
+        if (surplus0 > 0) IERC20(token0).safeTransfer(to, surplus0);
+        if (surplus1 > 0) IERC20(token1).safeTransfer(to, surplus1);
+        emit Skimmed(to, surplus0, surplus1);
+    }
 
     function collectProtocolFees() external nonReentrant {
         uint256 fee0 = protocolFees0;
