@@ -19,7 +19,12 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          # Pinned, not `stable`: the action resolves `stable` at run time, so
+          # every job silently picks up whatever Foundry shipped that morning.
+          # v1.8.3's post-build lint pass hangs on this project (compiles fine,
+          # then spins until the runner drops the job), which is exactly how
+          # CI broke without a single commit touching it.
+          version: v1.5.1
 
       - name: Check formatting
         run: forge fmt --check

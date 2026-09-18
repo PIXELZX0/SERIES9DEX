@@ -15,6 +15,12 @@ optimizer_runs = 200
 via_ir = true
 fs_permissions = [{ access = "read-write", path = "./" }]
 
+# Lints are advisory here and are run on demand, not as part of every build.
+# Independently of the pinned toolchain above, this keeps a slow or hanging
+# lint pass from being able to take the build down with it.
+[lint]
+lint_on_build = false
+
 [rpc_endpoints]
 monad_testnet = "${MONAD_TESTNET_RPC_URL}"
 monad = "${MONAD_RPC_URL}"
