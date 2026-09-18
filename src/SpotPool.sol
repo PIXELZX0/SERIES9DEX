@@ -7,6 +7,7 @@ import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/Reentrancy
 import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
 import {FeeSplit} from "./libraries/FeeSplit.sol";
 import {IPair} from "./interfaces/IPair.sol";
+import {Pausing} from "./libraries/Pausing.sol";
 
 /// @notice UniV2-style constant-product spot pool (DEX.md §5.1). Immutable:
 /// fee rate is fixed at creation by the pool creator; the protocol cut (0.1%
@@ -122,6 +123,7 @@ contract SpotPool is ReentrancyGuard {
         uint256 amount1Min,
         address to
     ) external nonReentrant returns (uint256 liquidity, uint256 used0, uint256 used1) {
+        Pausing.requireNotPaused(registry);
         if (to == address(0)) revert ZeroAddress();
         uint256 _reserve0 = reserve0;
         uint256 _reserve1 = reserve1;
@@ -209,6 +211,7 @@ contract SpotPool is ReentrancyGuard {
         nonReentrant
         returns (uint256 amountOut)
     {
+        Pausing.requireNotPaused(registry);
         if (to == address(0)) revert ZeroAddress();
         if (amountIn == 0) revert ZeroAmount();
         (uint256 reserveIn, uint256 reserveOut) = _orientedReserves(tokenIn);

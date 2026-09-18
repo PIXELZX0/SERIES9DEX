@@ -276,9 +276,49 @@ execPrice = (askPriceX18 + bidPriceX18) / 2
 - [ ] 크로스 체인 SER9 처리 여부
 - [ ] 거버넌스 토큰 및 파라미터 업데이트 방식
 - [ ] 프로토콜 금고(`ProtocolTreasury`) 의 인출 정책/다중서명 구조
-- [ ] **일시정지 / 서킷브레이커** — 현재 없습니다. 풀·페어는 배포 후 불변이고 관리자 스위치가 없습니다. 선물이 있는 프로토콜치고는 과감한 선택이므로, 의도라면 명시하고 아니면 설계가 필요합니다.
+- [x] ~~일시정지 / 서킷브레이커~~ — §8 참조
 - [ ] **크로스 마진** — 현재 포지션은 `trader => isLong => Position` 으로 페어별·방향별 격리입니다. 같은 담보를 여러 시장에 걸치는 구조는 미설계.
 - [ ] Foundry 툴체인 핀(v1.8.3) 상향 시점 — 업스트림 린트 행 때문에 고정 중 (README 참고)
+
+---
+
+## 8. 비상 정지 (Emergency Pause)
+
+> **원칙: 진입만 막고, 출구는 어떤 상태에서도 열어 둡니다.** 자금을 가두는 정지는 정지가 없는 것보다 나쁩니다.
+
+플래그는 `DexRegistry.paused` 하나이며, 모든 풀과 페어가 그것을 읽습니다. 풀에는 owner·업그레이드·자체 저장공간이 없지만 이미 `registry` 주소를 immutable 로 들고 있으므로, 레지스트리를 경유하면 **풀 배포 방식을 바꾸지 않고** 이미 배포된 풀에도 적용됩니다 (`libraries/Pausing.sol`).
+
+### 8.1 권한
+| 동작 | 권한자 |
+|---|---|
+| `pause()` | owner(Safe) **또는** guardian |
+| `unpause()` | owner 전용 |
+| `setGuardian(addr)` | owner 전용 (`address(0)` 이면 빠른 경로 해제) |
+
+guardian 은 **멈추는 것만** 가능하고 그 외 권한이 없습니다. Safe 는 이 시스템의 올바른 소유자이지만 사고 진행 중에 서명을 모으기엔 느립니다. 재가동은 신중해야 할 행위이므로 빠른 키에 두지 않습니다.
+
+### 8.2 범위
+| 막힘 (진입) | 열림 (탈출·정리) |
+|---|---|
+| `SpotPool.swapExactIn` / `swapFromPair` | `SpotPool.removeLiquidity` |
+| `SpotPool.addLiquidity` | `PerpPool.removeLiquidity` |
+| `PerpPool.addLiquidity` / `openPosition` / `addMargin` | `PerpPool.decreasePosition` / `removeMargin` |
+| `PerpPool.liquidate` (§8.3) | `PerpPool.pokeMark` / `updateFunding` |
+| `Pair.placeOrder` | `Pair.cancelOrder` / `removeExpired` |
+| `Pair.matchOrders` / `matchFromPool` | `collectProtocolFees` / `SpotPool.skim` |
+| `Pair.createSpotPool` / `createPerpPool` | `DexPositionManager.decrease*` / `burn` |
+
+매칭은 거래를 실행하므로 진입으로 분류합니다. 정지 중 메이커의 출구는 `cancelOrder` 입니다.
+
+`DexRouter` 와 `DexPositionManager` 에는 별도 검사가 없습니다 — 진입 경로가 결국 풀을 호출하므로 거기서 되돌려지고, 출구 경로는 어차피 열려 있어야 합니다.
+
+### 8.3 청산은 왜 막는가
+대부분의 선물 설계와 반대되는 선택입니다. 정지를 누를 가장 그럴듯한 이유가 **마크 가격 이상**인데, 잘못된 마크로 청산을 돌리면 멀쩡한 트레이더의 담보가 **되돌릴 수 없게** 넘어갑니다. 방치된 악성부채는 금고가 흡수하고 나중에 풀 수 있는 회계 손실이지만, 부당 청산은 복구가 불가능합니다.
+
+### 8.4 만료 타이머가 없는 이유
+출구가 항상 열려 있으므로 Safe 키를 분실해 영구 정지 상태가 되더라도 **자금은 갇히지 않습니다.** 새 진입만 불가능해집니다. 그 보장이 만료 타이머보다 강하므로 타이머를 두지 않습니다.
+
+검증: `test/Pause.t.sol` — 특히 `testPauseNeverTrapsFunds` 가 정지 상태에서 주문 취소·포지션 청산·양쪽 풀 LP 인출이 모두 가능함을 고정합니다.
 
 ---
 
@@ -286,6 +326,7 @@ execPrice = (askPriceX18 + bidPriceX18) / 2
 
 | 버전 | 날짜 (UTC) | 작성자 | 변경 |
 |---|---|---|---|
+| v0.6 | 2026-09-19 | 유서연 | **비상 정지 도입 (§8 신설).** `DexRegistry.paused` 단일 플래그를 모든 풀·페어가 읽는 구조. 진입만 차단하고 출구(인출·청산·주문취소)는 전 상태에서 개방 — 자금이 갇히지 않으므로 만료 타이머 불필요. guardian 은 정지만, 해제는 owner 전용. **청산도 정지 중 차단** (잘못된 마크로 인한 부당 청산이 악성부채보다 비가역적). §7 의 "일시정지" 항목 종결. |
 | v0.5 | 2026-09-19 | 유서연 | **명세를 구현에 맞춤.** (1) §3.2 — `bytes32 pairId` 폐기, `Pair` 컨트랙트 주소가 식별자(CREATE2, 해시는 salt 전용). (2) §4.1 — 시장가 라우팅을 `DexRouter` 의 호출자 지정 경로로 명시. (3) §4.2 — **책 직접 체결 추가**: 교차 호가는 두 지정가의 **중간값**에 서로 체결되며, 풀은 교차 중간가까지만 사용. 도착 순서가 체결가에 영향을 주지 않음. (4) §5.2 — 선물은 **무기한**(만기 없음), 마진은 `quoteToken` 단일, TWAP staleness 상한 · 청산 보상 하한 · 레버리지↔유지증거금 교차검증 반영. (5) §6 — **정규 티어 4개 + 커스텀 12슬롯** 구조와 그 이유(페어 브릭 방지) 기술, 가드레일을 실제 값(`1`~`10000` ppm, 하드코딩)으로 정정. (6) §7 — 해결된 항목 4개 정리, **일시정지 부재**와 **크로스마진 미설계**를 미결로 명시. |
 | v0.4 | 2026-08-21 | 유서연 | **LP 포지션을 ERC-721 로 전환** — 현물/선물 풀에서 대체가능 LP 토큰(ERC-20)을 제거하고 전송 불가 지분 원장(`sharesOf`/`totalShares`)으로 대체. 양도 가능한 유일한 표현은 `DexPositionManager` 가 발행하는 NFT. 온체인 SVG `tokenURI` 포함. 섹션 2 / 5.1 / 5.4 신설·개정. |
 | v0.3 | 2026-06-30 | 유서연 | **ANY/ANY 페어 지원** — 페어 구성을 `SER9 ↔ ERC-20` 에서 **두 ERC-20 자유 조합**으로 확장. SER9 도 ERC-20 으로 취급하여 페어의 어느 한쪽으로도 참여 가능. `pairId` 계산식에서 `tokenSER9` / `tokenERC20` 의 고정 슬롯을 제거하고 `(tokenA, tokenB)` 주소 정렬 기반 keccak256 으로 일반화. 섹션 1, 3.1, 3.2 개정. |

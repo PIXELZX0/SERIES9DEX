@@ -31,6 +31,9 @@ contract DeployDex is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address safeAddress = vm.envAddress("SAFE_ADDRESS");
+        // Optional. The guardian can pause and nothing else; leaving it unset
+        // means only the Safe can, which is slower in an incident.
+        address guardian = vm.envOr("GUARDIAN_ADDRESS", address(0));
         address deployer = vm.addr(deployerPrivateKey);
 
         require(safeAddress != address(0), "SAFE_ADDRESS required");
@@ -38,6 +41,7 @@ contract DeployDex is Script {
 
         console.log("Deployer (temporary):", deployer);
         console.log("Safe Owner (permanent):", safeAddress);
+        console.log("Guardian (pause-only):", guardian);
 
         vm.startBroadcast(deployerPrivateKey);
 
@@ -71,6 +75,7 @@ contract DeployDex is Script {
 
         // --- Wire, then hand over ---
         registry.setFactories(address(spotPoolFactory), address(perpPoolFactory));
+        if (guardian != address(0)) registry.setGuardian(guardian);
         registry.transferOwnership(safeAddress);
 
         vm.stopBroadcast();
@@ -91,6 +96,7 @@ contract DeployDex is Script {
         _writeDeploymentJson(
             deployer,
             safeAddress,
+            guardian,
             address(treasuryImplementation),
             address(treasury),
             address(registryImplementation),
@@ -105,6 +111,7 @@ contract DeployDex is Script {
     function _writeDeploymentJson(
         address deployer,
         address safeAddress,
+        address guardian,
         address treasuryImplementation,
         address treasury,
         address registryImplementation,
@@ -118,6 +125,7 @@ contract DeployDex is Script {
         vm.serializeUint(obj, "chainId", block.chainid);
         vm.serializeAddress(obj, "deployer", deployer);
         vm.serializeAddress(obj, "safeOwner", safeAddress);
+        vm.serializeAddress(obj, "guardian", guardian);
         vm.serializeAddress(obj, "protocolTreasuryImpl", treasuryImplementation);
         vm.serializeAddress(obj, "protocolTreasuryProxy", treasury);
         vm.serializeAddress(obj, "dexRegistryImpl", registryImplementation);

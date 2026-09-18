@@ -18,6 +18,18 @@ Series9 탈중앙화 거래소. ANY/ANY ERC-20 페어에 대한 AMM 현물 풀, 
 | `DexRouter` | [`src/DexRouter.sol`](src/DexRouter.sol) | 멀티홉 스왑 + deadline (주변부, 무상태) |
 | `ProtocolTreasury` | [`src/ProtocolTreasury.sol`](src/ProtocolTreasury.sol) | 프로토콜 수수료 수취 (UUPS) |
 
+### 비상 정지
+
+`DexRegistry.paused` 플래그 하나를 모든 풀·페어가 읽습니다. **진입만 막고 출구는 항상 열려 있습니다** —
+정지 중에도 유동성 인출·포지션 청산·주문 취소가 됩니다. 자금이 갇히지 않으므로 만료 타이머가 없습니다.
+
+- `pause()` — owner(Safe) 또는 guardian
+- `unpause()` — owner 전용
+- guardian 은 **멈추는 것만** 가능. `GUARDIAN_ADDRESS` 환경변수로 배포 시 설정(선택)
+
+청산도 정지 중 차단됩니다. 정지 사유가 대개 마크 가격 이상인데, 잘못된 마크로 도는 청산은
+되돌릴 수 없기 때문입니다. 자세한 근거는 [`docs/DEX.md` §8](docs/DEX.md) 참고.
+
 수수료: 풀 생성자가 `lpFee`를 설정하고, 그중 0.1%가 `ProtocolTreasury`로, 나머지 99.9%가 LP에게 분배됩니다.
 
 ### 페어당 풀 구성
@@ -57,6 +69,7 @@ forge snapshot --check   # CI 차단 조건
 ```bash
 export PRIVATE_KEY=<PRIVATE_KEY>
 export SAFE_ADDRESS=<SAFE_MULTISIG_ADDRESS>   # 배포 후 최종 owner
+export GUARDIAN_ADDRESS=<GUARDIAN_ADDRESS>    # 선택. 정지만 가능한 빠른 키
 
 forge script script/DeployDex.s.sol:DeployDex \
   --rpc-url "$MONAD_RPC_URL" --broadcast
