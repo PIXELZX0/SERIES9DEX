@@ -42,14 +42,15 @@ interface IPerpPoolFactory {
 /// the most room left before its *average* post-fee fill price would reach
 /// the target, and drains it to exactly that point; visiting the roomiest
 /// pool first is what maximises how much of the order clears inside the hop
-/// budget. The target is the order's own limit, or the opposite side of the
-/// book when the book is crossed — so a pool is used only while it beats the
-/// standing counterparty.
+/// budget. An ask's target is its own limit or the best bid, whichever is
+/// higher (`_sellTarget`), so a pool is only sold into while it pays more
+/// than the book. A bid's target is simply its own limit.
 ///
-/// Against the book, a crossed ask and bid fill each other directly at the
-/// resting order's price, paying no pool fee. Together the two rules mean an
-/// order never routes past a counterparty that is offering better, and never
-/// takes the book when a pool is cheaper.
+/// Against the book, a crossed ask and bid fill each other directly, at the
+/// bid's price and with no pool fee. The buyer therefore pays exactly what it
+/// posted and the seller clears at the best bid standing at or above its ask
+/// — the crossing spread goes to the seller, not to whichever side happened
+/// to rest first.
 ///
 /// `maxFills` bounds pool-hops, direct fills and dead-node cleanup, not
 /// orders — a single order filled across three pools spends three fills.
@@ -412,12 +413,11 @@ contract Pair is IPair, ReentrancyGuard {
         // Asks push pools' prices down, bids push them up; a book crossed on
         // both sides may need alternating passes. Bounded by maxFills.
         //
-        // Pools run first, but capped at the opposite side of the book rather
-        // than at the order's own limit (`_sellTarget`/`_buyTarget`). A pool
-        // is therefore only ever used while it beats the resting order on the
-        // other side, and `_matchBook` takes over from the point where it
-        // stops — so a fill always comes from whichever source is better at
-        // the margin, and never routes past a standing counterparty.
+        // Pools run first. An ask stops selling into one once it pays less
+        // than the best bid (`_sellTarget`), so it never routes past a better
+        // standing counterparty; a bid simply drains pools up to its own
+        // limit, which is what the book would charge it anyway. `_matchBook`
+        // then takes over from wherever the pools stopped.
         while (fills < maxFills) {
             uint256 before = fills;
             fills = _matchSide(Side.SELL, fills, maxFills);
@@ -429,9 +429,15 @@ contract Pair is IPair, ReentrancyGuard {
 
     /// @dev Fill the book directly against itself while it is crossed.
     ///
-    /// Execution price is the resting order's — the older of the two by id —
-    /// which is ordinary price-time priority. Both makers end up inside their
-    /// own limits by construction, and neither pays a pool fee.
+    /// Execution price is the bid's, always. A buyer pays exactly the price it
+    /// posted, and a seller clears at the best bid standing at or above its
+    /// own ask — the most the book can pay it. That is a deliberate asymmetry:
+    /// the crossing spread goes to the seller rather than to whichever side
+    /// happened to rest first, so a buyer gets no price improvement off the
+    /// book (it still gets it from the pools, which are drained up to the
+    /// buyer's limit first).
+    ///
+    /// Neither side pays a pool fee on a direct fill.
     ///
     /// Dead and expired heads are `_matchSide`'s job: it pops them (charging a
     /// fill each), and the next pass of `_match` picks up here again.
@@ -481,9 +487,9 @@ contract Pair is IPair, ReentrancyGuard {
         uint256 askId,
         uint256 bidId
     ) internal returns (bool) {
-        // The older id is the order that was resting, and the resting order
-        // sets the price.
-        uint256 execPrice = askId < bidId ? ask.priceX18 : bid.priceX18;
+        // The bid prices the fill: the buyer pays what it posted, the seller
+        // takes the best bid available at or above its ask.
+        uint256 execPrice = bid.priceX18;
 
         uint256 q = Math.min(
             ask.escrowRemaining,
@@ -531,12 +537,12 @@ contract Pair is IPair, ReentrancyGuard {
         return bid > orderPrice ? bid : orderPrice;
     }
 
-    /// @dev Mirror of `_sellTarget`: buying from a pool above a standing ask
-    /// would overpay for base the book already offers cheaper.
-    function _buyTarget(uint256 orderPrice) internal view returns (uint256) {
-        uint256 ask = bestAskPrice;
-        return (ask != 0 && ask < orderPrice) ? ask : orderPrice;
-    }
+    /// @dev There is no matching cap on the buy side. Because a direct fill
+    /// prices at the bid, the book costs the buyer its full limit, so stopping
+    /// a pool at the standing ask would only push the buyer onto a dearer
+    /// source. Pools are drained all the way to the buyer's own limit first
+    /// and the book takes whatever is left — which is where the buyer's price
+    /// improvement comes from.
 
     function _matchSide(Side side, uint256 fills, uint256 maxFills) internal returns (uint256) {
         while (fills < maxFills) {
@@ -633,7 +639,7 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     function _fillBestBuy(Level storage level, Order storage order, uint256 orderId) internal returns (bool) {
-        uint256 price = _buyTarget(order.priceX18);
+        uint256 price = order.priceX18;
         (address pool, uint256 dqMax, uint256 g, uint256 reserveBase, uint256 reserveQuote) = _bestBuyPool(price);
         if (pool == address(0)) return false;
 

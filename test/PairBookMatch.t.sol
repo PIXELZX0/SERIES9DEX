@@ -77,10 +77,10 @@ contract PairBookMatchTest is Test {
         return quoteAmt * 1e18 / baseAmt;
     }
 
-    /// The case that motivated this: a thin pool used to relay the two orders
-    /// through itself, and the buyer paid ~4.71 for base the book offered at
-    /// 4.50. Now the resting ask sets the price and the pool is not involved.
-    function testCrossedPairFillsAtRestingPrice() public {
+    /// Resting ask, incoming bid. The bid prices the fill, so the seller
+    /// clears well above its own 4.5 ask, and the buyer pays no more than the
+    /// 5.0 it posted.
+    function testSellerClearsAtTheBestBid() public {
         _seed(10 ether, 40 ether); // price 4.0, far too thin to fill 100
 
         uint256 sellerQuoteBefore = quote.balanceOf(seller);
@@ -93,32 +93,30 @@ contract PairBookMatchTest is Test {
         uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e18, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
-        assertEq(_filled(buyId), 100 ether);
+        uint256 bought = base.balanceOf(buyer) - buyerBaseBefore;
+        assertApproxEqAbs(bought, 100 ether, 10); // integer floors leave wei
+        assertApproxEqAbs(_filled(buyId), 100 ether, 10);
 
         uint256 sellerGot = quote.balanceOf(seller) - sellerQuoteBefore;
         uint256 buyerPaid = buyerQuoteBefore - quote.balanceOf(buyer);
-        assertEq(base.balanceOf(buyer) - buyerBaseBefore, 100 ether);
+        uint256 sold = _filled(sellId);
+        assertGt(sold, 99 ether);
 
-        // The pool holds a sliver of base priced under the 4.5 ask, and taking
-        // that first is correct — it is genuinely cheaper. The rest comes from
-        // the book at the resting ask.
-        uint256 fromBook = _filled(sellId);
-        assertGt(fromBook, 99 ether);
-
-        // Both sides land inside their own limits, and the buyer's average is
-        // at most the resting ask — where the AMM relay used to charge 4.7145
-        // for this exact pair.
-        uint256 buyerAvg = _avgX18(buyerPaid, 100 ether);
-        uint256 sellerAvg = _avgX18(sellerGot, fromBook);
-        assertLe(buyerAvg, 4.5e18);
-        assertGe(sellerAvg, 4.5e18 - 1);
-        assertLt(buyerAvg, 4.7145e18); // strictly better than the old routing
+        uint256 buyerAvg = _avgX18(buyerPaid, bought);
+        uint256 sellerAvg = _avgX18(sellerGot, sold);
+        // Buyer never above its own limit; seller never below its own ask.
+        assertLe(buyerAvg, 5e18);
+        assertGe(sellerAvg, 4.5e18);
+        // The book leg is the bulk of it and settles at the 5.0 bid, so the
+        // seller lands near the top of the crossing band rather than at 4.5.
+        assertGt(sellerAvg, 4.9e18);
         console.log("buyer avg  (milli):", buyerAvg / 1e15);
         console.log("seller avg (milli):", sellerAvg / 1e15);
     }
 
-    /// Symmetric: when the bid is the resting order, it sets the price.
-    function testRestingBidSetsThePrice() public {
+    /// Same outcome with the bid resting: which side arrived first does not
+    /// move the price, only the bid does.
+    function testRestingBidPricesItToo() public {
         _seed(10 ether, 40 ether);
         uint256 buyerQuoteBefore = quote.balanceOf(buyer);
         uint256 sellerQuoteBefore = quote.balanceOf(seller);
@@ -129,12 +127,11 @@ contract PairBookMatchTest is Test {
         uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e18, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
-        assertEq(_filled(buyId), 100 ether);
+        assertApproxEqAbs(_filled(buyId), 100 ether, 10);
         uint256 sold = _filled(sellId);
         assertGt(sold, 99 ether);
 
-        // The book leg settles at the resting bid's 5.0, so the seller clears
-        // well above their own 4.5 ask — the mirror of the previous test.
+        // Identical to the resting-ask case: the bid prices it either way.
         uint256 sellerAvg = _avgX18(quote.balanceOf(seller) - sellerQuoteBefore, sold);
         uint256 buyerAvg = _avgX18(buyerQuoteBefore - quote.balanceOf(buyer), 100 ether);
         assertGt(sellerAvg, 4.9e18);
@@ -190,8 +187,8 @@ contract PairBookMatchTest is Test {
         assertEq(_filled(buyId), 30 ether);
         (,, IPair.Status buyStatus,,,,, uint256 buyEscrow,) = pair.orders(buyId);
         assertEq(uint8(buyStatus), uint8(IPair.Status.OPEN));
-        // 500 escrowed, 135 spent at 4.5.
-        assertEq(buyEscrow, 365 ether);
+        // 500 escrowed, 150 spent: 30 base at the bid's own 5.0.
+        assertEq(buyEscrow, 350 ether);
         (uint256 askPrice, uint256 askTotal) = pair.bestAsk();
         assertEq(askPrice, 0); // ask side cleared
         assertEq(askTotal, 0);
