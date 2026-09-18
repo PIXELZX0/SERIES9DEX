@@ -78,9 +78,10 @@ contract PairBookMatchTest is Test {
     }
 
     /// The case that motivated this: a thin pool used to relay the two orders
-    /// through itself, and the buyer paid ~4.71 for base the book offered at
-    /// 4.50. Now the resting ask sets the price and the pool is not involved.
-    function testCrossedPairFillsAtRestingPrice() public {
+    /// through itself and the buyer paid ~4.7145 for base the book was
+    /// offering at 4.50. Now they meet at the 4.75 midpoint and the pool takes
+    /// no cut of it.
+    function testCrossedPairFillsAtMidpoint() public {
         _seed(10 ether, 40 ether); // price 4.0, far too thin to fill 100
 
         uint256 sellerQuoteBefore = quote.balanceOf(seller);
@@ -99,26 +100,22 @@ contract PairBookMatchTest is Test {
         uint256 buyerPaid = buyerQuoteBefore - quote.balanceOf(buyer);
         assertEq(base.balanceOf(buyer) - buyerBaseBefore, 100 ether);
 
-        // The pool holds a sliver of base priced under the 4.5 ask, and taking
-        // that first is correct — it is genuinely cheaper. The rest comes from
-        // the book at the resting ask.
-        uint256 fromBook = _filled(sellId);
-        assertGt(fromBook, 99 ether);
+        uint256 sold = _filled(sellId);
+        assertGt(sold, 99 ether);
 
-        // Both sides land inside their own limits, and the buyer's average is
-        // at most the resting ask — where the AMM relay used to charge 4.7145
-        // for this exact pair.
         uint256 buyerAvg = _avgX18(buyerPaid, 100 ether);
-        uint256 sellerAvg = _avgX18(sellerGot, fromBook);
-        assertLe(buyerAvg, 4.5e18);
-        assertGe(sellerAvg, 4.5e18 - 1);
-        assertLt(buyerAvg, 4.7145e18); // strictly better than the old routing
+        uint256 sellerAvg = _avgX18(sellerGot, sold);
+        // Each side strictly inside its own limit, and both at the midpoint.
+        assertLe(buyerAvg, 5e18);
+        assertGe(sellerAvg, 4.5e18);
+        assertApproxEqRel(buyerAvg, 4.75e18, 1e15);
+        assertApproxEqRel(sellerAvg, 4.75e18, 1e15);
         console.log("buyer avg  (milli):", buyerAvg / 1e15);
         console.log("seller avg (milli):", sellerAvg / 1e15);
     }
 
-    /// Symmetric: when the bid is the resting order, it sets the price.
-    function testRestingBidSetsThePrice() public {
+    /// Same fill, opposite arrival order: the midpoint does not move.
+    function testArrivalOrderDoesNotMoveThePrice() public {
         _seed(10 ether, 40 ether);
         uint256 buyerQuoteBefore = quote.balanceOf(buyer);
         uint256 sellerQuoteBefore = quote.balanceOf(seller);
@@ -133,12 +130,11 @@ contract PairBookMatchTest is Test {
         uint256 sold = _filled(sellId);
         assertGt(sold, 99 ether);
 
-        // The book leg settles at the resting bid's 5.0, so the seller clears
-        // well above their own 4.5 ask — the mirror of the previous test.
         uint256 sellerAvg = _avgX18(quote.balanceOf(seller) - sellerQuoteBefore, sold);
         uint256 buyerAvg = _avgX18(buyerQuoteBefore - quote.balanceOf(buyer), 100 ether);
-        assertGt(sellerAvg, 4.9e18);
-        assertLe(buyerAvg, 5e18);
+        // Identical to the resting-ask case above.
+        assertApproxEqRel(sellerAvg, 4.75e18, 1e15);
+        assertApproxEqRel(buyerAvg, 4.75e18, 1e15);
         console.log("buyer avg  (milli):", buyerAvg / 1e15);
         console.log("seller avg (milli):", sellerAvg / 1e15);
     }
@@ -190,8 +186,8 @@ contract PairBookMatchTest is Test {
         assertEq(_filled(buyId), 30 ether);
         (,, IPair.Status buyStatus,,,,, uint256 buyEscrow,) = pair.orders(buyId);
         assertEq(uint8(buyStatus), uint8(IPair.Status.OPEN));
-        // 500 escrowed, 135 spent at 4.5.
-        assertEq(buyEscrow, 365 ether);
+        // 500 escrowed, 142.5 spent: 30 base at the 4.75 midpoint.
+        assertEq(buyEscrow, 357.5 ether);
         (uint256 askPrice, uint256 askTotal) = pair.bestAsk();
         assertEq(askPrice, 0); // ask side cleared
         assertEq(askTotal, 0);

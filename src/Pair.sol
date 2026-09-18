@@ -47,9 +47,9 @@ interface IPerpPoolFactory {
 /// standing counterparty.
 ///
 /// Against the book, a crossed ask and bid fill each other directly at the
-/// resting order's price, paying no pool fee. Together the two rules mean an
-/// order never routes past a counterparty that is offering better, and never
-/// takes the book when a pool is cheaper.
+/// midpoint of their two limits, paying no pool fee. Together the two rules
+/// mean an order never routes past a counterparty that is offering better,
+/// and never takes the book when a pool is cheaper.
 ///
 /// `maxFills` bounds pool-hops, direct fills and dead-node cleanup, not
 /// orders — a single order filled across three pools spends three fills.
@@ -412,12 +412,12 @@ contract Pair is IPair, ReentrancyGuard {
         // Asks push pools' prices down, bids push them up; a book crossed on
         // both sides may need alternating passes. Bounded by maxFills.
         //
-        // Pools run first, but capped at the opposite side of the book rather
-        // than at the order's own limit (`_sellTarget`/`_buyTarget`). A pool
-        // is therefore only ever used while it beats the resting order on the
-        // other side, and `_matchBook` takes over from the point where it
-        // stops — so a fill always comes from whichever source is better at
-        // the margin, and never routes past a standing counterparty.
+        // Pools run first, but capped at the crossing midpoint rather than at
+        // the order's own limit (`_sellTarget`/`_buyTarget`). A pool is
+        // therefore only ever used while it beats what the book would pay,
+        // and `_matchBook` takes over from the point where it stops — so a
+        // fill always comes from whichever source is better at the margin,
+        // and never routes past a standing counterparty.
         while (fills < maxFills) {
             uint256 before = fills;
             fills = _matchSide(Side.SELL, fills, maxFills);
@@ -429,9 +429,11 @@ contract Pair is IPair, ReentrancyGuard {
 
     /// @dev Fill the book directly against itself while it is crossed.
     ///
-    /// Execution price is the resting order's — the older of the two by id —
-    /// which is ordinary price-time priority. Both makers end up inside their
-    /// own limits by construction, and neither pays a pool fee.
+    /// Execution price is the midpoint of the two limits, so the crossing
+    /// spread is split evenly between them: the seller clears above its ask,
+    /// the buyer pays below its bid, and neither outcome turns on which side
+    /// arrived first. Both end up inside their own limits by construction, and
+    /// neither pays a pool fee.
     ///
     /// Dead and expired heads are `_matchSide`'s job: it pops them (charging a
     /// fill each), and the next pass of `_match` picks up here again.
@@ -481,9 +483,11 @@ contract Pair is IPair, ReentrancyGuard {
         uint256 askId,
         uint256 bidId
     ) internal returns (bool) {
-        // The older id is the order that was resting, and the resting order
-        // sets the price.
-        uint256 execPrice = askId < bidId ? ask.priceX18 : bid.priceX18;
+        // Midpoint of the two limits, so the crossing spread is split evenly:
+        // the seller clears above its ask, the buyer pays below its bid, and
+        // neither outcome depends on which side happened to arrive first.
+        // Floor division keeps it inside both limits (a <= (a+b)/2 <= b).
+        uint256 execPrice = (ask.priceX18 + bid.priceX18) / 2;
 
         uint256 q = Math.min(
             ask.escrowRemaining,
@@ -523,19 +527,29 @@ contract Pair is IPair, ReentrancyGuard {
         return true;
     }
 
-    /// @dev Price a pool fill for this ask has to beat: its own limit, or the
-    /// best bid when the book is crossed. Selling into a pool below a bid that
-    /// is already willing to pay more would give the maker's base away cheap.
-    function _sellTarget(uint256 orderPrice) internal view returns (uint256) {
+    /// @dev What a crossed book would fill at right now, or 0 when it is not
+    /// crossed. Both sides' pool routing stops here: past this point the book
+    /// is the better source, for whichever side is looking.
+    function _crossMidpoint() internal view returns (uint256) {
+        uint256 ask = bestAskPrice;
         uint256 bid = bestBidPrice;
-        return bid > orderPrice ? bid : orderPrice;
+        if (ask == 0 || bid == 0 || bid < ask) return 0;
+        return (ask + bid) / 2;
     }
 
-    /// @dev Mirror of `_sellTarget`: buying from a pool above a standing ask
+    /// @dev Price a pool fill for this ask has to beat: its own limit, or the
+    /// crossing midpoint when the book is crossed. Selling into a pool for
+    /// less than the book would already pay gives the maker's base away cheap.
+    function _sellTarget(uint256 orderPrice) internal view returns (uint256) {
+        uint256 mid = _crossMidpoint();
+        return mid > orderPrice ? mid : orderPrice;
+    }
+
+    /// @dev Mirror of `_sellTarget`: buying from a pool above the midpoint
     /// would overpay for base the book already offers cheaper.
     function _buyTarget(uint256 orderPrice) internal view returns (uint256) {
-        uint256 ask = bestAskPrice;
-        return (ask != 0 && ask < orderPrice) ? ask : orderPrice;
+        uint256 mid = _crossMidpoint();
+        return (mid != 0 && mid < orderPrice) ? mid : orderPrice;
     }
 
     function _matchSide(Side side, uint256 fills, uint256 maxFills) internal returns (uint256) {
