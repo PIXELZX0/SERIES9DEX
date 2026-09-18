@@ -93,9 +93,8 @@ contract DexRouterTest is Test {
         uint256 expected = router.quoteExactInput(_path1(), address(tokenA), 100 ether);
         uint256 before = tokenB.balanceOf(user);
         vm.prank(user);
-        uint256 out = router.swapExactTokensForTokens(
-            _path1(), address(tokenA), 100 ether, expected, user, block.timestamp + 1
-        );
+        uint256 out =
+            router.swapExactTokensForTokens(_path1(), address(tokenA), 100 ether, expected, user, block.timestamp + 1);
         assertEq(out, expected);
         assertEq(tokenB.balanceOf(user) - before, expected);
     }
@@ -133,9 +132,7 @@ contract DexRouterTest is Test {
         uint256 expected = router.quoteExactInput(_path1(), address(tokenA), 100 ether);
         vm.prank(user);
         vm.expectRevert(DexRouter.InsufficientOutput.selector);
-        router.swapExactTokensForTokens(
-            _path1(), address(tokenA), 100 ether, expected + 1, user, block.timestamp + 1
-        );
+        router.swapExactTokensForTokens(_path1(), address(tokenA), 100 ether, expected + 1, user, block.timestamp + 1);
     }
 
     /// A hop pointed at a contract the registry never issued must not get the
