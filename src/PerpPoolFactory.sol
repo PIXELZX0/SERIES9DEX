@@ -25,6 +25,8 @@ contract PerpPoolFactory {
         PerpParams calldata params
     ) external returns (address pool) {
         if (!IDexRegistry(registry).isPair(msg.sender)) revert NotPair();
-        pool = address(new PerpPool(registry, treasury, spotPool, baseToken, quoteToken, lpFeeRatePpm, msg.sender, params));
+        pool = address(
+            new PerpPool(registry, treasury, spotPool, baseToken, quoteToken, lpFeeRatePpm, msg.sender, params)
+        );
     }
 }
