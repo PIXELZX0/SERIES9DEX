@@ -24,6 +24,7 @@ contract SpotPool is ReentrancyGuard {
 
     uint256 public constant MINIMUM_LIQUIDITY = 1000;
     uint256 public constant MAX_AUTO_FILLS = 5;
+    uint256 internal constant PPM = 1e6;
 
     address public immutable registry;
     address public immutable pair;
@@ -98,6 +99,17 @@ contract SpotPool is ReentrancyGuard {
         (uint256 totalFee,,) = FeeSplit.split(amountIn, lpFeeRatePpm);
         uint256 effectiveIn = amountIn - totalFee;
         return reserveOut * effectiveIn / (reserveIn + effectiveIn);
+    }
+
+    /// @notice Input required to get at least `amountOut` out, fee included.
+    /// Rounds up at both steps, so quoting then swapping this amount never
+    /// falls a wei short of the target.
+    function getAmountIn(address tokenIn, uint256 amountOut) public view returns (uint256) {
+        (uint256 reserveIn, uint256 reserveOut) = _orientedReserves(tokenIn);
+        if (reserveIn == 0 || reserveOut == 0) revert InsufficientLiquidity();
+        if (amountOut >= reserveOut) revert InsufficientLiquidity();
+        uint256 effectiveIn = Math.mulDiv(reserveIn, amountOut, reserveOut - amountOut, Math.Rounding.Ceil);
+        return Math.mulDiv(effectiveIn, PPM, PPM - lpFeeRatePpm, Math.Rounding.Ceil);
     }
 
     // ------------------------------------------------------------ liquidity

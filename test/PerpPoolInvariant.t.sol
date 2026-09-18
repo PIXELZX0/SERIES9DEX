@@ -112,7 +112,7 @@ contract PerpPoolInvariantTest is Test {
         Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
         SpotPool spot;
         {
-            spot = SpotPool(pair.createSpotPool(3000, 1e15));
+            spot = SpotPool(pair.createSpotPool(3000));
         }
         MockERC20 base = MockERC20(spot.token0());
         quote = MockERC20(spot.token1());

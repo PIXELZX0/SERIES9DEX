@@ -8,15 +8,29 @@ Series9 탈중앙화 거래소. ANY/ANY ERC-20 페어에 대한 AMM 현물 풀, 
 
 | 컨트랙트 | 파일 | 역할 |
 |----------|------|------|
-| `DexRegistry` | [`src/DexRegistry.sol`](src/DexRegistry.sol) | 페어/풀 등록 및 조회 (UUPS) |
-| `SpotPool` | [`src/SpotPool.sol`](src/SpotPool.sol) | AMM 현물 풀, LP 토큰 |
+| `DexRegistry` | [`src/DexRegistry.sol`](src/DexRegistry.sol) | 페어 등록·조회, 팩토리 배선 (UUPS) |
+| `Pair` | [`src/Pair.sol`](src/Pair.sol) | 페어당 1개. 풀 생성 + 온체인 지정가 오더북 |
+| `SpotPool` | [`src/SpotPool.sol`](src/SpotPool.sol) | AMM 현물 풀, LP 지분 원장 |
 | `SpotPoolFactory` | [`src/SpotPoolFactory.sol`](src/SpotPoolFactory.sol) | 현물 풀 배포 |
-| `Orderbook` | [`src/Orderbook.sol`](src/Orderbook.sol) | 온체인 지정가 오더북 |
 | `PerpPool` | [`src/PerpPool.sol`](src/PerpPool.sol) | 선물 포지션/담보 |
 | `PerpPoolFactory` | [`src/PerpPoolFactory.sol`](src/PerpPoolFactory.sol) | 선물 풀 배포 |
+| `DexPositionManager` | [`src/DexPositionManager.sol`](src/DexPositionManager.sol) | LP 지분을 ERC-721 포지션으로 래핑 |
+| `DexRouter` | [`src/DexRouter.sol`](src/DexRouter.sol) | 멀티홉 스왑 + deadline (주변부, 무상태) |
 | `ProtocolTreasury` | [`src/ProtocolTreasury.sol`](src/ProtocolTreasury.sol) | 프로토콜 수수료 수취 (UUPS) |
 
 수수료: 풀 생성자가 `lpFee`를 설정하고, 그중 0.1%가 `ProtocolTreasury`로, 나머지 99.9%가 LP에게 분배됩니다.
+
+### 페어당 풀 구성
+
+현물 풀은 수수료율당 1개입니다. 정규 티어 4개(100 / 500 / 3,000 / 10,000 ppm)는
+언제나 생성 가능하고, 그 외 1~10,000ppm 값은 커스텀 슬롯 12개를 나눠 씁니다.
+정규 티어를 누가 먼저 만들든 그 풀이 곧 그 티어의 정식 풀이라 아무나 유동성을
+넣고 라우팅할 수 있습니다 — 커스텀 슬롯이 전부 소진돼도 페어는 계속 쓸 수 있습니다.
+
+주문 가격은 페어별 `tickSize` 대신 **유효숫자 6자리 십진 그리드**를 씁니다.
+`Pair.priceIsValid(priceX18)` / `Pair.tickSizeAt(priceX18)` 로 조회합니다.
+비율 기준이라 토큰 데시멀 차이가 큰 페어에도 그대로 맞고, 선착순으로 고정되는
+페어 전역 값이 없습니다.
 
 ## 개발
 
@@ -37,8 +51,9 @@ forge script script/DeployDex.s.sol:DeployDex \
   --rpc-url "$MONAD_RPC_URL" --broadcast
 ```
 
-배포 스크립트는 ProtocolTreasury/DexRegistry 프록시와 Orderbook + 팩토리를 배포하고,
-레지스트리에 연결한 뒤 소유권을 Safe로 이관합니다.
+배포 스크립트는 ProtocolTreasury/DexRegistry 프록시와 팩토리·DexPositionManager·DexRouter를
+배포하고, 레지스트리에 연결한 뒤 소유권을 Safe로 이관합니다. 페어와 풀은 배포 대상이
+아니며 런타임에 `DexRegistry.createPair` / `Pair.createSpotPool` 로 만듭니다.
 
 ## GitHub Actions
 
@@ -62,8 +77,8 @@ required reviewer를 걸어두면 실제 배포가 수동 승인 뒤에만 나�
 안전장치:
 - RPC가 보고한 chain id가 대상 체인과 다르면 배포 전에 실패 (RPC 시크릿 오설정 방지)
 - 배포자 잔액 0 또는 `SAFE_ADDRESS == 배포자`면 배포 전에 실패
-- 배포 후 `registry`/`treasury` 소유권과 orderbook·팩토리 배선을 온체인 조회로 대조,
-  하나라도 어긋나면 잡 실패 (`setOrderbook`은 1회성이라 재배포 외 복구 불가)
+- 배포 후 `registry`/`treasury` 소유권과 팩토리·주변부 배선을 온체인 조회로 대조,
+  하나라도 어긋나면 잡 실패 (풀과 페어는 배포 후 불변이라 재배포 외 복구 불가)
 
 > 배포 워크플로는 **스택 전체를 새로 배포**합니다. 업그레이드가 아니라 신규 배포이므로
 > 이미 운영 중인 배포가 있으면 실행 전에 의도한 동작인지 확인하세요.

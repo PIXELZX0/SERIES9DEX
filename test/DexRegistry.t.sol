@@ -72,18 +72,16 @@ contract DexRegistryTest is Test {
         assertEq(registry.getPair(address(tokenA), address(tokenB)), pairAddr);
         assertTrue(registry.isPair(pairAddr));
 
-        address poolXY = pair.createSpotPool(3000, 1e15);
+        address poolXY = pair.createSpotPool(3000);
         assertEq(registry.poolToPair(poolXY), pairAddr);
         assertEq(SpotPool(poolXY).token0(), t0);
         assertEq(SpotPool(poolXY).token1(), t1);
         assertTrue(registry.isSpotPool(poolXY));
-        assertEq(pair.tickSize(), 1e15);
 
-        // Second pool, different fee, same pair; its tick arg is ignored.
-        address poolXY2 = pair.createSpotPool(5000, 999);
+        // Second pool, different fee, same pair.
+        address poolXY2 = pair.createSpotPool(5000);
         assertEq(registry.poolToPair(poolXY2), pairAddr);
         assertEq(pair.spotPoolsLength(), 2);
-        assertEq(pair.tickSize(), 1e15);
     }
 
     function testCreatePairDedupReverts() public {
@@ -118,47 +116,62 @@ contract DexRegistryTest is Test {
     function testCreateSpotPoolFeeGuardrail() public {
         Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
         // 1ppm and 10,000ppm boundaries pass, outside them reverts.
-        pair.createSpotPool(1, 1e15);
-        pair.createSpotPool(10_000, 1e15);
+        pair.createSpotPool(1);
+        pair.createSpotPool(10_000);
         vm.expectRevert(Pair.InvalidFeeRate.selector);
-        pair.createSpotPool(0, 1e15);
+        pair.createSpotPool(0);
         vm.expectRevert(Pair.InvalidFeeRate.selector);
-        pair.createSpotPool(10_001, 1e15);
+        pair.createSpotPool(10_001);
     }
 
     function testCreateSpotPoolDuplicateFeeReverts() public {
         Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
-        pair.createSpotPool(3000, 1e15);
+        pair.createSpotPool(3000);
         vm.expectRevert(Pair.DuplicateFeeRate.selector);
-        pair.createSpotPool(3000, 1e15);
+        pair.createSpotPool(3000);
     }
 
     function testCreatePerpPoolRequiresFactory() public {
         Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
-        address spot = pair.createSpotPool(3000, 1e15);
+        address spot = pair.createSpotPool(3000);
         vm.expectRevert(Pair.FactoryNotSet.selector);
         pair.createPerpPool(address(tokenA), spot, 3000, _defaultPerpParams());
     }
 
-    function testCreateSpotPoolRequiresTickOnFirstCall() public {
+    function testCustomTiersAreCappedButCanonicalTiersSurvive() public {
         Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
-        vm.expectRevert(Pair.InvalidTickSize.selector);
-        pair.createSpotPool(3000, 0);
-    }
-
-    function testCreateSpotPoolCapsPoolCount() public {
-        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
-        for (uint32 i = 0; i < pair.MAX_SPOT_POOLS(); i++) {
-            pair.createSpotPool(1000 + i, 1e15);
+        // Burn every custom slot with junk rates, the squat this cap exists for.
+        for (uint32 i = 0; i < pair.MAX_CUSTOM_SPOT_POOLS(); i++) {
+            pair.createSpotPool(1 + i);
         }
-        vm.expectRevert(Pair.TooManySpotPools.selector);
-        pair.createSpotPool(2000, 1e15);
+        assertEq(pair.customSpotPools(), pair.MAX_CUSTOM_SPOT_POOLS());
+        vm.expectRevert(Pair.TooManyCustomSpotPools.selector);
+        pair.createSpotPool(2000);
+
+        // The four canonical tiers are still creatable, so the pair lives.
+        pair.createSpotPool(pair.FEE_TIER_LOWEST());
+        pair.createSpotPool(pair.FEE_TIER_LOW());
+        pair.createSpotPool(pair.FEE_TIER_MEDIUM());
+        pair.createSpotPool(pair.FEE_TIER_HIGH());
+        assertEq(pair.spotPoolsLength(), pair.MAX_CUSTOM_SPOT_POOLS() + 4);
+        assertEq(pair.customSpotPools(), pair.MAX_CUSTOM_SPOT_POOLS());
     }
 
-    function testPlaceOrderRequiresTickSizeSet() public {
+    function testCanonicalTiersNeverConsumeCustomSlots() public {
         Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
-        vm.expectRevert(Pair.TickSizeNotSet.selector);
-        pair.placeOrder(IPair.Side.SELL, 1e15, 1 ether, uint64(block.timestamp + 1 days), 0);
+        pair.createSpotPool(100);
+        pair.createSpotPool(500);
+        pair.createSpotPool(3000);
+        pair.createSpotPool(10_000);
+        assertEq(pair.customSpotPools(), 0);
+    }
+
+    function testPlaceOrderNeedsNoPoolForPriceGrid() public {
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        // No tickSize to set and nothing to squat: the grid is a pure
+        // function of the price, so an off-grid price is the only rejection.
+        vm.expectRevert(Pair.InvalidPrice.selector);
+        pair.placeOrder(IPair.Side.SELL, 1e15 + 1, 1 ether, uint64(block.timestamp + 1 days), 0);
     }
 
     // ----------------------------------------------------------------- admin

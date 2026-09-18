@@ -237,7 +237,7 @@ contract SpotPoolTest is Test {
         MockFeeOnTransferERC20 fot = new MockFeeOnTransferERC20(100); // 1%
         MockERC20 plain = new MockERC20("P", "P", 18);
         Pair fotPair = Pair(registry.createPair(address(fot), address(plain)));
-        SpotPool fotPool = SpotPool(fotPair.createSpotPool(FEE_PPM, 1e15));
+        SpotPool fotPool = SpotPool(fotPair.createSpotPool(FEE_PPM));
 
         fot.mint(alice, 1000 ether);
         plain.mint(alice, 1000 ether);

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.22;
 
 /// @notice One Pair contract per token pair: owns pool creation, the
-/// on-chain orderbook for that pair, and per-pair config (tickSize).
+/// on-chain orderbook for that pair.
 /// Replaces the former bytes32 pairId scheme entirely — a Pair's own
 /// address is the identifier.
 interface IPair {
@@ -20,7 +20,6 @@ interface IPair {
 
     function base() external view returns (address);
     function quote() external view returns (address);
-    function tickSize() external view returns (uint256);
     function isSpotPool(address pool) external view returns (bool);
 
     /// @notice Called by a spot pool of this pair right after its own swap.

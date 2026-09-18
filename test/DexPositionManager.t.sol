@@ -64,7 +64,7 @@ contract DexPositionManagerTest is Test {
         (base, quote) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
         pair = Pair(registry.createPair(address(base), address(quote)));
-        spot = SpotPool(pair.createSpotPool(FEE_PPM, 1e15));
+        spot = SpotPool(pair.createSpotPool(FEE_PPM));
         perp = PerpPool(
             pair.createPerpPool(
                 address(quote),
@@ -353,7 +353,7 @@ contract DexPositionManagerTest is Test {
 
     function test_tokenURI_survivesHostileTokenSymbols() public {
         Pair hostilePair = Pair(registry.createPair(address(hostile), address(noSymbol)));
-        SpotPool hostilePool = SpotPool(hostilePair.createSpotPool(FEE_PPM, 1e15));
+        SpotPool hostilePool = SpotPool(hostilePair.createSpotPool(FEE_PPM));
         hostile.mint(alice, 1000 ether);
         noSymbol.mint(alice, 1000 ether);
 

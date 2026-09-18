@@ -13,6 +13,12 @@ library FeeSplit {
         returns (uint256 totalFee, uint256 protocolFee, uint256 lpFee)
     {
         totalFee = amount * lpFeeRatePpm / PPM;
+        (protocolFee, lpFee) = splitFee(totalFee);
+    }
+
+    /// @dev Split a fee that was already computed (or capped) elsewhere, so
+    /// callers never have to restate the protocol cut by hand.
+    function splitFee(uint256 totalFee) internal pure returns (uint256 protocolFee, uint256 lpFee) {
         protocolFee = totalFee / PROTOCOL_CUT_DIVISOR;
         lpFee = totalFee - protocolFee;
     }

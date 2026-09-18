@@ -64,7 +64,7 @@ contract DexEndToEndTest is Test {
     function testFullLifecycle() public {
         // 1. Anyone creates the pair, then a spot pool on it.
         pair = Pair(registry.createPair(address(base), address(quote)));
-        spot = SpotPool(pair.createSpotPool(3000, 1e15));
+        spot = SpotPool(pair.createSpotPool(3000));
 
         // 2. LP seeds the pool at price 4.0.
         vm.startPrank(lpUser);

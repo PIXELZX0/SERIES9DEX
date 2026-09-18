@@ -8,6 +8,7 @@ interface ISpotPool {
     function lpFeeRatePpm() external view returns (uint32);
     function getReserves() external view returns (uint256 reserve0, uint256 reserve1, uint64 blockTimestampLast);
     function getAmountOut(address tokenIn, uint256 amountIn) external view returns (uint256 amountOut);
+    function getAmountIn(address tokenIn, uint256 amountOut) external view returns (uint256 amountIn);
     function spotPriceX18() external view returns (uint256);
     function price0CumulativeLast() external view returns (uint256);
     function price1CumulativeLast() external view returns (uint256);

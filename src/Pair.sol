@@ -30,17 +30,19 @@ interface IPerpPoolFactory {
 /// @notice One Pair contract per token pair (DEX.md §3), CREATE2-deployed by
 /// `DexRegistry.createPair`. Owns everything that used to be split across
 /// `DexRegistry`'s pairId-keyed mappings and the `Orderbook` singleton's
-/// per-pair book: pool creation, the on-chain orderbook, and per-pair config
-/// (tickSize, fixed forever by whoever creates the first spot pool). This
-/// contract's own address is the pair's identifier — there is no separate
-/// bytes32 pairId anymore.
+/// per-pair book: pool creation and the on-chain orderbook. This contract's
+/// own address is the pair's identifier — there is no separate bytes32
+/// pairId anymore, and no per-pair parameter either: order prices sit on a
+/// decimal grid (`MAX_PRICE_SIG_DIGITS`) that is a pure function of the price
+/// rather than a tick some first caller gets to fix forever.
 ///
 /// Matching routes across every spot pool of this pair (`spotPools`), not a
-/// single pool: each fill greedily picks whichever pool currently offers the
-/// order's maker the most room before its post-fee marginal price reaches the
-/// limit, so a large order spreads its price impact across pools instead of
-/// dumping into one. `maxFills` now bounds pool-hops, not order-processing
-/// steps — a single order filled across three pools spends three fills.
+/// single pool. Each hop picks whichever pool has the most room left before
+/// its *average* post-fee fill price would reach the order's limit, and
+/// drains it to exactly that point; visiting the roomiest pool first is what
+/// maximises how much of the order clears inside the hop budget. `maxFills`
+/// bounds pool-hops and dead-node cleanup, not orders — a single order
+/// filled across three pools spends three fills.
 contract Pair is IPair, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -67,6 +69,7 @@ contract Pair is IPair, ReentrancyGuard {
 
     uint256 public constant MIN_QUOTE_NOTIONAL = 1e4;
     uint256 internal constant PPM = 1e6;
+    uint256 internal constant BPS = 1e4;
 
     uint32 public constant MAX_LEVERAGE_CAP = 50;
     uint32 public constant MIN_MAINTENANCE_MARGIN_BPS = 100;
@@ -79,22 +82,38 @@ contract Pair is IPair, ReentrancyGuard {
     uint32 public constant MIN_LP_FEE_PPM = 1;
     uint32 public constant MAX_LP_FEE_PPM = 10_000;
 
-    // ponytail: hard cap on spot pools, matching-loop gas scales with this
-    uint256 public constant MAX_SPOT_POOLS = 8;
+    // The four canonical spot fee tiers. Always creatable and never charged
+    // against the custom budget, which is what makes a pair ungriefable:
+    // squatting one of these is pointless because the squatter's pool *is*
+    // the canonical pool for that tier — anyone may add liquidity to it and
+    // anyone may route through it.
+    uint32 public constant FEE_TIER_LOWEST = 100; // 0.01%
+    uint32 public constant FEE_TIER_LOW = 500; // 0.05%
+    uint32 public constant FEE_TIER_MEDIUM = 3_000; // 0.30%
+    uint32 public constant FEE_TIER_HIGH = 10_000; // 1.00%
+
+    // Any other rate in [MIN_LP_FEE_PPM, MAX_LP_FEE_PPM] is a custom tier.
+    // Burning all twelve costs ~12 pool deployments and only removes the
+    // exotic rates; the four canonical tiers survive, so the pair stays
+    // usable no matter who got there first.
+    // ponytail: matching-loop gas scales with 4 + this
+    uint256 public constant MAX_CUSTOM_SPOT_POOLS = 12;
+
+    /// @notice Orders sit on a decimal grid rather than a per-pair tick:
+    /// `priceX18` may carry at most this many significant decimal digits.
+    /// The granularity is relative, so a pair priced at 1e21 (WBTC/USDC) and
+    /// one priced at 1e1 (SHIB/USDC) both get ~6 usable digits — something no
+    /// absolute tick constant can do. And because it is a pure function of
+    /// the price, there is no per-pair value for a first caller to squat.
+    uint256 public constant MAX_PRICE_SIG_DIGITS = 6;
 
     address public immutable registry;
     address public immutable base; // token0, sorted
     address public immutable quote; // token1
-    // Not immutable: unset (0) until the first createSpotPool call, which
-    // fixes it forever — mirrors the pre-Pair design where the first spot
-    // pool's creator set the tick. Keeping this decoupled from Pair's own
-    // (permissionless, parameter-free) CREATE2 creation means front-running
-    // createPair itself no longer lets an attacker squat a bad tick with a
-    // zero-liquidity, zero-cost call before anyone has created a real pool.
-    uint256 public tickSize;
 
     address[] public spotPools;
     address[] public perpPools;
+    uint256 public customSpotPools; // spotPools created off the canonical tiers
     mapping(address => bool) public isSpotPool;
     mapping(uint32 => bool) public spotFeeUsed;
     // Perp markets vary by quoteToken too (base/quote roles flip), so the
@@ -109,10 +128,10 @@ contract Pair is IPair, ReentrancyGuard {
 
     mapping(uint256 => Order) public orders;
     uint256 public nextOrderId = 1;
+    mapping(address => uint256[]) internal _makerOrders;
 
     error ZeroAmount();
     error ZeroAddress();
-    error InvalidTickSize();
     error InvalidPrice();
     error InvalidAmount();
     error InvalidExpiry();
@@ -127,8 +146,7 @@ contract Pair is IPair, ReentrancyGuard {
     error InvalidQuoteToken();
     error UnknownSpotPool();
     error InvalidPerpParams();
-    error TickSizeNotSet();
-    error TooManySpotPools();
+    error TooManyCustomSpotPools();
 
     event SpotPoolCreated(address indexed pool, address indexed creator, uint32 lpFeeRatePpm);
     event PerpPoolCreated(address indexed pool, address indexed creator, address quoteToken, uint32 lpFeeRatePpm);
@@ -146,18 +164,16 @@ contract Pair is IPair, ReentrancyGuard {
 
     // ---------------------------------------------------------- pool creation
 
-    /// @notice The first call for a pair fixes `tickSize` forever (`tickSize_`
-    /// must be non-zero); every later call ignores its own `tickSize_` and
-    /// keeps the one already set — same rule the pre-Pair design applied to
-    /// the first spot pool created for a pairId.
-    function createSpotPool(uint32 lpFeeRatePpm, uint256 tickSize_) external returns (address pool) {
-        if (spotPools.length >= MAX_SPOT_POOLS) revert TooManySpotPools();
-        if (tickSize == 0) {
-            if (tickSize_ == 0) revert InvalidTickSize();
-            tickSize = tickSize_;
-        }
+    /// @notice One spot pool per fee rate. The four canonical tiers are
+    /// always available; every other rate consumes one of the twelve custom
+    /// slots. Carries no per-pair parameter, so there is nothing to squat.
+    function createSpotPool(uint32 lpFeeRatePpm) external returns (address pool) {
         if (lpFeeRatePpm < MIN_LP_FEE_PPM || lpFeeRatePpm > MAX_LP_FEE_PPM) revert InvalidFeeRate();
         if (spotFeeUsed[lpFeeRatePpm]) revert DuplicateFeeRate();
+        if (!isCanonicalFeeTier(lpFeeRatePpm)) {
+            if (customSpotPools >= MAX_CUSTOM_SPOT_POOLS) revert TooManyCustomSpotPools();
+            customSpotPools++;
+        }
         address factory = IDexRegistry(registry).spotPoolFactory();
         if (factory == address(0)) revert FactoryNotSet();
         pool = ISpotPoolFactory(factory).deploy(IDexRegistry(registry).treasury(), base, quote, lpFeeRatePpm);
@@ -183,6 +199,14 @@ contract Pair is IPair, ReentrancyGuard {
                 || params.liquidationFeeBps > MAX_LIQUIDATION_FEE_BPS || params.maxUtilizationBps == 0
                 || params.maxUtilizationBps > 10_000 || params.fundingCoeffPpmPerHour > MAX_FUNDING_COEFF_PPM_PER_HOUR
         ) revert InvalidPerpParams();
+        // Initial margin at the pool's own max leverage has to clear
+        // maintenance plus the liquidation fee. Without this the two bounds
+        // pass independently while combining into a pool where a max-leverage
+        // position is liquidatable the block it opens (50x = 200bps initial
+        // margin against a 2000bps maintenance floor).
+        if (BPS / params.maxLeverageX <= uint256(params.maintenanceMarginBps) + params.liquidationFeeBps) {
+            revert InvalidPerpParams();
+        }
 
         address factory = IDexRegistry(registry).perpPoolFactory();
         if (factory == address(0)) revert FactoryNotSet();
@@ -221,6 +245,83 @@ contract Pair is IPair, ReentrancyGuard {
         return (level.active, level.totalBase, level.nextPrice);
     }
 
+    /// @notice Walk one side of the book outward from `startPrice` (0 starts
+    /// at the best price). `cursor` is what to pass as the next call's
+    /// `startPrice`; 0 means the side is exhausted.
+    function levels(Side side, uint256 startPrice, uint256 count)
+        external
+        view
+        returns (uint256[] memory prices, uint256[] memory totalBase, uint256 cursor)
+    {
+        mapping(uint256 => Level) storage book = side == Side.BUY ? bidLevels : askLevels;
+        cursor = startPrice == 0 ? (side == Side.BUY ? bestBidPrice : bestAskPrice) : startPrice;
+        prices = new uint256[](count);
+        totalBase = new uint256[](count);
+        uint256 n;
+        while (n < count && cursor != 0 && book[cursor].active) {
+            prices[n] = cursor;
+            totalBase[n] = book[cursor].totalBase;
+            n++;
+            cursor = book[cursor].nextPrice;
+        }
+        assembly {
+            mstore(prices, n)
+            mstore(totalBase, n)
+        }
+    }
+
+    function ordersOfLength(address maker) external view returns (uint256) {
+        return _makerOrders[maker].length;
+    }
+
+    /// @notice A page of one maker's orders, oldest first. `start` indexes
+    /// that maker's own list, not `orders`. Includes closed orders — the FIFO
+    /// keeps them and so does this, so a front end can show fill history
+    /// without replaying events.
+    function ordersOf(address maker, uint256 start, uint256 count)
+        external
+        view
+        returns (uint256[] memory ids, Order[] memory page)
+    {
+        uint256[] storage all = _makerOrders[maker];
+        uint256 len = all.length;
+        if (start >= len) return (new uint256[](0), new Order[](0));
+        uint256 n = Math.min(count, len - start);
+        ids = new uint256[](n);
+        page = new Order[](n);
+        for (uint256 i = 0; i < n; i++) {
+            ids[i] = all[start + i];
+            page[i] = orders[ids[i]];
+        }
+    }
+
+    function isCanonicalFeeTier(uint32 lpFeeRatePpm) public pure returns (bool) {
+        return lpFeeRatePpm == FEE_TIER_LOWEST || lpFeeRatePpm == FEE_TIER_LOW
+            || lpFeeRatePpm == FEE_TIER_MEDIUM || lpFeeRatePpm == FEE_TIER_HIGH;
+    }
+
+    /// @notice Whether `priceX18` sits on the decimal grid `placeOrder` accepts.
+    function priceIsValid(uint256 priceX18) public pure returns (bool) {
+        if (priceX18 == 0) return false;
+        uint256 ceiling = 10 ** MAX_PRICE_SIG_DIGITS;
+        while (priceX18 >= ceiling) {
+            if (priceX18 % 10 != 0) return false;
+            priceX18 /= 10;
+        }
+        return true;
+    }
+
+    /// @notice Smallest legal price increment at `priceX18`'s magnitude —
+    /// what a per-pair `tickSize` used to be, derived rather than chosen.
+    function tickSizeAt(uint256 priceX18) public pure returns (uint256 tick) {
+        tick = 1;
+        uint256 ceiling = 10 ** MAX_PRICE_SIG_DIGITS;
+        while (priceX18 >= ceiling) {
+            priceX18 /= 10;
+            tick *= 10;
+        }
+    }
+
     // --------------------------------------------------------------- orders
 
     function placeOrder(Side side, uint256 priceX18, uint256 amountBase, uint64 expiry, uint256 priceHint)
@@ -228,8 +329,7 @@ contract Pair is IPair, ReentrancyGuard {
         nonReentrant
         returns (uint256 orderId)
     {
-        if (tickSize == 0) revert TickSizeNotSet();
-        if (priceX18 == 0 || priceX18 % tickSize != 0) revert InvalidPrice();
+        if (!priceIsValid(priceX18)) revert InvalidPrice();
         if (amountBase == 0) revert InvalidAmount();
         if (expiry <= block.timestamp) revert InvalidExpiry();
         if (Math.mulDiv(amountBase, priceX18, 1e18) < MIN_QUOTE_NOTIONAL) revert NotionalTooSmall();
@@ -252,6 +352,7 @@ contract Pair is IPair, ReentrancyGuard {
         order.priceX18 = priceX18;
         order.amountBase = amountBase;
         order.escrowRemaining = escrowed;
+        _makerOrders[msg.sender].push(orderId);
 
         _enqueue(side, priceX18, orderId, amountBase, priceHint);
         emit OrderPlaced(orderId, msg.sender, side, priceX18, amountBase, escrowed, expiry);
@@ -312,9 +413,15 @@ contract Pair is IPair, ReentrancyGuard {
             }
             Order storage order = orders[orderId];
             if (order.status != Status.OPEN) {
-                // Lazily cancelled/closed node: pop and keep going.
+                // Lazily cancelled/closed node: pop and keep going. This
+                // costs a fill. Without that, stuffing a level with cancelled
+                // orders behind one live order makes every later match walk
+                // all of them for free; past ~30k nodes no single call can
+                // finish, every call reverts, and the level — plus every
+                // worse level on that side — is frozen for good.
                 level.headOrder = order.nextInLevel;
                 if (level.headOrder == 0) level.tailOrder = 0;
+                fills++;
                 continue;
             }
             if (order.expiry <= block.timestamp) {
@@ -359,12 +466,11 @@ contract Pair is IPair, ReentrancyGuard {
 
     function _fillBestSell(Level storage level, Order storage order, uint256 orderId) internal returns (bool) {
         uint256 price = order.priceX18;
-        (address pool, uint256 dxMax) = _bestSellPool(price);
+        (address pool, uint256 dxMax, uint256 g, uint256 reserveBase, uint256 reserveQuote) = _bestSellPool(price);
         if (pool == address(0)) return false;
         uint256 dx = Math.min(dxMax, order.escrowRemaining);
         if (dx == 0) return false;
 
-        (uint256 g, uint256 reserveBase, uint256 reserveQuote) = _poolFeeAndReserves(pool);
         uint256 minOut = Math.mulDiv(dx, price, 1e18);
         // Integer rounding can shave the AMM output below the bound;
         // shrink once, then give up on this pool until its price moves.
@@ -391,10 +497,9 @@ contract Pair is IPair, ReentrancyGuard {
 
     function _fillBestBuy(Level storage level, Order storage order, uint256 orderId) internal returns (bool) {
         uint256 price = order.priceX18;
-        (address pool, uint256 dqMax) = _bestBuyPool(price);
+        (address pool, uint256 dqMax, uint256 g, uint256 reserveBase, uint256 reserveQuote) = _bestBuyPool(price);
         if (pool == address(0)) return false;
 
-        (uint256 g, uint256 reserveBase, uint256 reserveQuote) = _poolFeeAndReserves(pool);
         uint256 remainingBase = order.amountBase - order.filledBase;
         uint256 dq = Math.min(dqMax, order.escrowRemaining);
         // Spend needed to buy the full remainder outright (getAmountIn).
@@ -433,12 +538,18 @@ contract Pair is IPair, ReentrancyGuard {
         return true;
     }
 
-    /// @dev Among every spot pool of this pair, the one whose current
-    /// post-fee marginal SELL price is above `price` and has the most base
-    /// capacity before that marginal price would reach `price`. Both
-    /// crossability and capacity reuse the same lhs/rhs derivation the
-    /// single-pool version used.
-    function _bestSellPool(uint256 price) internal view returns (address bestPool, uint256 bestDxMax) {
+    /// @dev Among every spot pool of this pair, the one with the most base
+    /// capacity before its average post-fee SELL price would fall to `price`.
+    /// Selling dx base into (Rb, Rq) at fee multiplier g nets
+    /// `Rq·g·dx / (Rb·PPM + g·dx)`; setting the average `out/dx` equal to the
+    /// limit and solving for dx gives the `dxMax` below, and the same
+    /// rearrangement with dx = 0 gives the crossability test. Returns the
+    /// winner's fee and reserves so the caller need not re-read them.
+    function _bestSellPool(uint256 price)
+        internal
+        view
+        returns (address bestPool, uint256 bestDxMax, uint256 bestG, uint256 bestBase, uint256 bestQuote)
+    {
         uint256 n = spotPools.length;
         for (uint256 i = 0; i < n; i++) {
             address p = spotPools[i];
@@ -451,12 +562,19 @@ contract Pair is IPair, ReentrancyGuard {
             if (dxMax > bestDxMax) {
                 bestDxMax = dxMax;
                 bestPool = p;
+                bestG = g;
+                bestBase = reserveBase;
+                bestQuote = reserveQuote;
             }
         }
     }
 
     /// @dev Same idea as `_bestSellPool` for the BUY side.
-    function _bestBuyPool(uint256 price) internal view returns (address bestPool, uint256 bestDqMax) {
+    function _bestBuyPool(uint256 price)
+        internal
+        view
+        returns (address bestPool, uint256 bestDqMax, uint256 bestG, uint256 bestBase, uint256 bestQuote)
+    {
         uint256 n = spotPools.length;
         for (uint256 i = 0; i < n; i++) {
             address p = spotPools[i];
@@ -469,6 +587,9 @@ contract Pair is IPair, ReentrancyGuard {
             if (dqMax > bestDqMax) {
                 bestDqMax = dqMax;
                 bestPool = p;
+                bestG = g;
+                bestBase = reserveBase;
+                bestQuote = reserveQuote;
             }
         }
     }
@@ -538,9 +659,9 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     function _linkLevel(Side side, uint256 price, uint256 priceHint) internal {
-        mapping(uint256 => Level) storage levels = side == Side.BUY ? bidLevels : askLevels;
+        mapping(uint256 => Level) storage book = side == Side.BUY ? bidLevels : askLevels;
         uint256 best = side == Side.BUY ? bestBidPrice : bestAskPrice;
-        Level storage level = levels[price];
+        Level storage level = book[price];
         level.active = true;
 
         if (best == 0) {
@@ -550,24 +671,24 @@ contract Pair is IPair, ReentrancyGuard {
         // Start from the hint when it is an active level at-or-better than the
         // new price; otherwise walk from the best.
         uint256 cursor = best;
-        if (priceHint != 0 && levels[priceHint].active && !_isBetter(side, price, priceHint)) {
+        if (priceHint != 0 && book[priceHint].active && !_isBetter(side, price, priceHint)) {
             cursor = priceHint;
         }
         if (_isBetter(side, price, cursor)) {
             // Better than the walk start (only possible when cursor == best).
             level.nextPrice = cursor;
-            levels[cursor].prevPrice = price;
+            book[cursor].prevPrice = price;
             _setBest(side, price);
             return;
         }
         // Walk toward worse prices until the next level is worse than ours.
         while (true) {
-            uint256 next = levels[cursor].nextPrice;
+            uint256 next = book[cursor].nextPrice;
             if (next == 0 || _isBetter(side, price, next)) {
                 level.prevPrice = cursor;
                 level.nextPrice = next;
-                levels[cursor].nextPrice = price;
-                if (next != 0) levels[next].prevPrice = price;
+                book[cursor].nextPrice = price;
+                if (next != 0) book[next].prevPrice = price;
                 return;
             }
             cursor = next;
@@ -575,15 +696,15 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     function _unlinkLevel(Side side, uint256 price) internal {
-        mapping(uint256 => Level) storage levels = side == Side.BUY ? bidLevels : askLevels;
-        Level storage level = levels[price];
+        mapping(uint256 => Level) storage book = side == Side.BUY ? bidLevels : askLevels;
+        Level storage level = book[price];
         uint256 prev = level.prevPrice;
         uint256 next = level.nextPrice;
-        if (prev != 0) levels[prev].nextPrice = next;
-        if (next != 0) levels[next].prevPrice = prev;
+        if (prev != 0) book[prev].nextPrice = next;
+        if (next != 0) book[next].prevPrice = prev;
         uint256 best = side == Side.BUY ? bestBidPrice : bestAskPrice;
         if (best == price) _setBest(side, next);
-        delete levels[price];
+        delete book[price];
     }
 
     function _setBest(Side side, uint256 price) internal {

@@ -25,7 +25,6 @@ contract PairTest is Test {
     address internal lp = makeAddr("lp");
 
     uint32 internal constant FEE_PPM = 3000;
-    uint256 internal constant TICK = 1e15;
     uint64 internal expiry;
 
     function setUp() public {
@@ -51,7 +50,7 @@ contract PairTest is Test {
         (base, quote) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
         pair = Pair(registry.createPair(address(base), address(quote)));
-        pool = SpotPool(pair.createSpotPool(FEE_PPM, TICK));
+        pool = SpotPool(pair.createSpotPool(FEE_PPM));
         expiry = uint64(block.timestamp + 1 days);
 
         address[3] memory users = [maker, taker, lp];
@@ -303,7 +302,7 @@ contract PairTest is Test {
         // 1ppm, to satisfy the one-pool-per-fee rule — negligible for the
         // routing math below) — the greedy router should exhaust one pool
         // down to the limit price, then hop to the other.
-        address pool2Addr = pair.createSpotPool(FEE_PPM + 1, TICK);
+        address pool2Addr = pair.createSpotPool(FEE_PPM + 1);
         SpotPool pool2 = SpotPool(pool2Addr);
         vm.startPrank(lp);
         base.approve(pool2Addr, type(uint256).max);
@@ -330,7 +329,7 @@ contract PairTest is Test {
     }
 
     function testMatchBuySplitsAcrossPools() public {
-        address pool2Addr = pair.createSpotPool(FEE_PPM + 1, TICK);
+        address pool2Addr = pair.createSpotPool(FEE_PPM + 1);
         SpotPool pool2 = SpotPool(pool2Addr);
         vm.startPrank(lp);
         base.approve(pool2Addr, type(uint256).max);
@@ -373,5 +372,115 @@ contract PairTest is Test {
         }
         assertEq(base.balanceOf(address(pair)), sumBase);
         assertEq(quote.balanceOf(address(pair)), sumQuote);
+    }
+
+    // ------------------------------------------------------- price grid
+
+    function testPriceGridAcceptsSixSignificantDigits() public view {
+        assertTrue(pair.priceIsValid(4.5e18));
+        assertTrue(pair.priceIsValid(123456e12)); // 1.23456 at X18
+        assertTrue(pair.priceIsValid(10)); // tiny-scale pair, every integer legal
+        assertTrue(pair.priceIsValid(999999));
+        assertFalse(pair.priceIsValid(0));
+        assertFalse(pair.priceIsValid(4.5e18 + 1));
+        assertFalse(pair.priceIsValid(1234567e12)); // seven digits
+    }
+
+    function testTickSizeAtTracksMagnitude() public view {
+        assertEq(pair.tickSizeAt(4.5e18), 1e13);
+        assertEq(pair.tickSizeAt(999999), 1);
+        assertEq(pair.tickSizeAt(1e21), 1e16);
+    }
+
+    function testOffGridPriceRejected() public {
+        vm.prank(maker);
+        vm.expectRevert(Pair.InvalidPrice.selector);
+        pair.placeOrder(IPair.Side.SELL, 4.5e18 + 1, 10 ether, expiry, 0);
+    }
+
+    // --------------------------------------------------- dead-node budget
+
+    /// Cancelled FIFO nodes must be charged against `maxFills`. Without that,
+    /// a level stuffed behind one live order makes every later match walk all
+    /// of them for free, and past ~30k nodes no call can ever finish.
+    function testDeadNodesConsumeFillBudget() public {
+        uint256 price = 4.5e18;
+        uint256[] memory dead = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) {
+            dead[i] = _placeSell(price, 1 ether);
+        }
+        // Live order at the tail keeps totalBase > 0, so the level survives
+        // the cancels and the dead nodes stay queued in front of it.
+        uint256 live = _placeSell(price, 10 ether);
+        for (uint256 i = 0; i < 5; i++) {
+            vm.prank(maker);
+            pair.cancelOrder(dead[i]);
+        }
+
+        // Cross the level, which also runs the swap's own auto-match with a
+        // budget of MAX_AUTO_FILLS (5) — exactly the five dead nodes.
+        vm.prank(lp);
+        pool.swapExactIn(address(quote), 50 ether, 0, lp);
+        (uint256 ask,) = pair.bestAsk();
+        assertEq(ask, price);
+        (, uint256 filled,) = _order(live);
+        assertEq(filled, 0, "budget went to pops, not to the live order");
+
+        // The backlog is gone for good, so the next unit of budget reaches
+        // the live order instead of re-walking the dead ones.
+        pair.matchOrders(1);
+        (, filled,) = _order(live);
+        assertGt(filled, 0);
+    }
+
+    // -------------------------------------------------------------- views
+
+    function testOrdersOfPaginates() public {
+        uint256 a = _placeSell(4.5e18, 10 ether);
+        uint256 b = _placeSell(4.6e18, 10 ether);
+        uint256 c = _placeBuy(3.5e18, 10 ether);
+        assertEq(pair.ordersOfLength(maker), 3);
+
+        (uint256[] memory ids, Pair.Order[] memory page) = pair.ordersOf(maker, 0, 2);
+        assertEq(ids.length, 2);
+        assertEq(ids[0], a);
+        assertEq(ids[1], b);
+        assertEq(page[0].priceX18, 4.5e18);
+        assertEq(uint8(page[1].side), uint8(IPair.Side.SELL));
+
+        (ids, page) = pair.ordersOf(maker, 2, 10);
+        assertEq(ids.length, 1);
+        assertEq(ids[0], c);
+        assertEq(uint8(page[0].side), uint8(IPair.Side.BUY));
+
+        (ids, page) = pair.ordersOf(maker, 99, 10);
+        assertEq(ids.length, 0);
+        assertEq(page.length, 0);
+    }
+
+    function testLevelsWalkBookOutward() public {
+        _placeSell(4.5e18, 1 ether);
+        _placeSell(4.7e18, 2 ether);
+        _placeSell(4.6e18, 3 ether);
+
+        (uint256[] memory prices, uint256[] memory totals, uint256 cursor) =
+            pair.levels(IPair.Side.SELL, 0, 2);
+        assertEq(prices.length, 2);
+        assertEq(prices[0], 4.5e18); // best ask first
+        assertEq(prices[1], 4.6e18);
+        assertEq(totals[1], 3 ether);
+        assertEq(cursor, 4.7e18);
+
+        (prices, totals, cursor) = pair.levels(IPair.Side.SELL, cursor, 10);
+        assertEq(prices.length, 1);
+        assertEq(prices[0], 4.7e18);
+        assertEq(totals[0], 2 ether);
+        assertEq(cursor, 0); // side exhausted
+    }
+
+    function testLevelsOnEmptySideIsEmpty() public view {
+        (uint256[] memory prices,, uint256 cursor) = pair.levels(IPair.Side.BUY, 0, 5);
+        assertEq(prices.length, 0);
+        assertEq(cursor, 0);
     }
 }

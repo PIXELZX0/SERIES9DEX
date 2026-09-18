@@ -9,6 +9,7 @@ import {DexRegistry} from "../src/DexRegistry.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
 import {DexPositionManager} from "../src/DexPositionManager.sol";
+import {DexRouter} from "../src/DexRouter.sol";
 
 /// @notice Deploys the Series9DEX stack with a Safe multisig as the final owner.
 ///
@@ -66,6 +67,7 @@ contract DeployDex is Script {
         PerpPoolFactory perpPoolFactory = new PerpPoolFactory(address(registry));
         // Periphery: the registry does not need to know about it, LPs opt in.
         DexPositionManager positionManager = new DexPositionManager(address(registry));
+        DexRouter router = new DexRouter(address(registry));
 
         // --- Wire, then hand over ---
         registry.setFactories(address(spotPoolFactory), address(perpPoolFactory));
@@ -81,6 +83,7 @@ contract DeployDex is Script {
         console.log("SpotPoolFactory:", address(spotPoolFactory));
         console.log("PerpPoolFactory:", address(perpPoolFactory));
         console.log("DexPositionManager:", address(positionManager));
+        console.log("DexRouter:", address(router));
 
         // Labeled record for CI: verification and post-deploy assertions need to
         // know which proxy is which, and the broadcast file only says
@@ -94,7 +97,8 @@ contract DeployDex is Script {
             address(registry),
             address(spotPoolFactory),
             address(perpPoolFactory),
-            address(positionManager)
+            address(positionManager),
+            address(router)
         );
     }
 
@@ -107,7 +111,8 @@ contract DeployDex is Script {
         address registry,
         address spotPoolFactory,
         address perpPoolFactory,
-        address positionManager
+        address positionManager,
+        address router
     ) internal {
         string memory obj = "deployment";
         vm.serializeUint(obj, "chainId", block.chainid);
@@ -119,7 +124,8 @@ contract DeployDex is Script {
         vm.serializeAddress(obj, "dexRegistryProxy", registry);
         vm.serializeAddress(obj, "spotPoolFactory", spotPoolFactory);
         vm.serializeAddress(obj, "perpPoolFactory", perpPoolFactory);
-        string memory out = vm.serializeAddress(obj, "dexPositionManager", positionManager);
+        vm.serializeAddress(obj, "dexPositionManager", positionManager);
+        string memory out = vm.serializeAddress(obj, "dexRouter", router);
 
         vm.createDir("deployments", true);
         vm.writeJson(out, string.concat("deployments/", vm.toString(block.chainid), ".json"));
