@@ -24,14 +24,30 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     mapping(address => address) public poolToPair;
     mapping(address => bool) public isSpotPool;
 
+    /// @notice Emergency stop, read by every pool and pair of this deployment.
+    /// It gates entry only — swaps, new liquidity, new positions, new orders
+    /// and matching. Withdrawing liquidity, closing a position and cancelling
+    /// an order stay open in every state, so a pause can never trap funds and
+    /// therefore never needs an expiry to be safe.
+    bool public paused;
+    /// @notice May pause but not unpause, and holds nothing else. A Safe is
+    /// the right owner for this system and the wrong thing to be assembling
+    /// signatures on while an incident runs, so the fast path is a single
+    /// key that can only ever stop the system.
+    address public guardian;
+
     error ZeroAddress();
     error FactoryNotSet();
     error PairAlreadyExists();
     error OnlyPair();
+    error NotPauser();
+    error AlreadyInState();
 
     event FactoriesSet(address indexed spotPoolFactory, address indexed perpPoolFactory);
     event PairCreated(address indexed pair, address indexed token0, address indexed token1);
     event PoolRegistered(address indexed pair, address indexed pool, bool isSpot);
+    event PausedSet(bool paused, address indexed by);
+    event GuardianSet(address indexed guardian);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -51,6 +67,28 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         spotPoolFactory = spotPoolFactory_;
         perpPoolFactory = perpPoolFactory_; // zero allowed: perp creation disabled
         emit FactoriesSet(spotPoolFactory_, perpPoolFactory_);
+    }
+
+    /// @notice Owner or guardian. Entry points stop; exits stay open.
+    function pause() external {
+        if (msg.sender != owner() && msg.sender != guardian) revert NotPauser();
+        if (paused) revert AlreadyInState();
+        paused = true;
+        emit PausedSet(true, msg.sender);
+    }
+
+    /// @notice Owner only. Restarting the system is a deliberate act and does
+    /// not belong on the fast key.
+    function unpause() external onlyOwner {
+        if (!paused) revert AlreadyInState();
+        paused = false;
+        emit PausedSet(false, msg.sender);
+    }
+
+    /// @notice Zero disables the fast path, leaving the owner as sole pauser.
+    function setGuardian(address guardian_) external onlyOwner {
+        guardian = guardian_;
+        emit GuardianSet(guardian_);
     }
 
     // --------------------------------------------------------- pair creation
@@ -98,5 +136,7 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[40] private _gap;
+    // Two new variables pack into one slot, so the gap drops by one and the
+    // reserved region still ends where it always did.
+    uint256[39] private _gap;
 }

@@ -20,6 +20,7 @@ SPOT_FACTORY="$(get spotPoolFactory)"
 PERP_FACTORY="$(get perpPoolFactory)"
 POSITION_MANAGER="$(get dexPositionManager)"
 ROUTER="$(get dexRouter)"
+GUARDIAN="$(get guardian)"
 
 fail=0
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
@@ -42,5 +43,7 @@ check "spotPoolFactory.registry()" "$REGISTRY"     "$(call "$SPOT_FACTORY" 'regi
 check "perpPoolFactory.registry()" "$REGISTRY"     "$(call "$PERP_FACTORY" 'registry()(address)')"
 check "positionManager.registry()" "$REGISTRY"     "$(call "$POSITION_MANAGER" 'registry()(address)')"
 check "router.registry()"          "$REGISTRY"     "$(call "$ROUTER" 'registry()(address)')"
+check "registry.guardian()"        "$GUARDIAN"     "$(call "$REGISTRY" 'guardian()(address)')"
+check "registry.paused()"          "false"         "$(call "$REGISTRY" 'paused()(bool)')"
 
 exit $fail

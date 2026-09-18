@@ -9,6 +9,7 @@ import {SafeCast} from "openzeppelin-contracts/contracts/utils/math/SafeCast.sol
 import {FeeSplit} from "./libraries/FeeSplit.sol";
 import {ISpotPool} from "./interfaces/ISpotPool.sol";
 import {PerpParams} from "./interfaces/IPerpPool.sol";
+import {Pausing} from "./libraries/Pausing.sol";
 
 /// @notice Perpetual futures pool (DEX.md §5.2), GMX-style: a single-sided
 /// quote-token LP vault is the counterparty to every position. Mark price is
@@ -242,6 +243,7 @@ contract PerpPool is ReentrancyGuard {
         nonReentrant
         returns (uint256 shares)
     {
+        Pausing.requireNotPaused(registry);
         if (to == address(0)) revert ZeroAddress();
         pokeMark();
         updateFunding();
@@ -295,6 +297,7 @@ contract PerpPool is ReentrancyGuard {
     // ------------------------------------------------------------ positions
 
     function openPosition(bool isLong, uint256 marginQuote, uint256 sizeBase) external nonReentrant {
+        Pausing.requireNotPaused(registry);
         if (sizeBase == 0) revert ZeroAmount();
         uint256 mark = _requireMark();
         updateFunding();
@@ -383,6 +386,7 @@ contract PerpPool is ReentrancyGuard {
     }
 
     function addMargin(bool isLong, uint256 quoteIn) external nonReentrant {
+        Pausing.requireNotPaused(registry);
         Position storage pos = positions[msg.sender][isLong];
         if (pos.sizeBase == 0) revert NoPosition();
         pokeMark();
@@ -409,6 +413,12 @@ contract PerpPool is ReentrancyGuard {
     }
 
     function liquidate(address trader, bool isLong) external nonReentrant {
+        // Blocked while paused, unlike most perp designs. The likeliest reason
+        // to pause is the mark being wrong, and liquidating against a wrong
+        // mark takes solvent traders' collateral irreversibly. Bad debt left
+        // sitting is a loss the vault can absorb and unwind; a wrongful
+        // liquidation is not recoverable.
+        Pausing.requireNotPaused(registry);
         uint256 mark = _requireMark();
         updateFunding();
         Position storage pos = positions[trader][isLong];

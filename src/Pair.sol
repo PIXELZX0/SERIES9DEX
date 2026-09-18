@@ -9,6 +9,7 @@ import {IDexRegistry} from "./interfaces/IDexRegistry.sol";
 import {ISpotPool} from "./interfaces/ISpotPool.sol";
 import {IPerpPool, PerpParams} from "./interfaces/IPerpPool.sol";
 import {IPair} from "./interfaces/IPair.sol";
+import {Pausing} from "./libraries/Pausing.sol";
 
 interface ISpotPoolFactory {
     function deploy(address treasury, address token0, address token1, uint32 lpFeeRatePpm)
@@ -184,6 +185,7 @@ contract Pair is IPair, ReentrancyGuard {
     /// always available; every other rate consumes one of the twelve custom
     /// slots. Carries no per-pair parameter, so there is nothing to squat.
     function createSpotPool(uint32 lpFeeRatePpm) external returns (address pool) {
+        Pausing.requireNotPaused(registry);
         if (lpFeeRatePpm < MIN_LP_FEE_PPM || lpFeeRatePpm > MAX_LP_FEE_PPM) revert InvalidFeeRate();
         if (spotFeeUsed[lpFeeRatePpm]) revert DuplicateFeeRate();
         if (!isCanonicalFeeTier(lpFeeRatePpm)) {
@@ -204,6 +206,7 @@ contract Pair is IPair, ReentrancyGuard {
         external
         returns (address pool)
     {
+        Pausing.requireNotPaused(registry);
         if (lpFeeRatePpm < MIN_LP_FEE_PPM || lpFeeRatePpm > MAX_LP_FEE_PPM) revert InvalidFeeRate();
         if (quoteToken != base && quoteToken != quote) revert InvalidQuoteToken();
         if (!isSpotPool[spotPool]) revert UnknownSpotPool();
@@ -348,6 +351,7 @@ contract Pair is IPair, ReentrancyGuard {
         nonReentrant
         returns (uint256 orderId)
     {
+        Pausing.requireNotPaused(registry);
         if (!priceIsValid(priceX18)) revert InvalidPrice();
         if (amountBase == 0) revert InvalidAmount();
         if (expiry <= block.timestamp) revert InvalidExpiry();
@@ -408,6 +412,9 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     function _match(uint256 maxFills) internal {
+        // Matching executes trades, so it is an entry point, not an exit. A
+        // maker's way out while paused is `cancelOrder`, which stays open.
+        Pausing.requireNotPaused(registry);
         uint256 fills;
         // Asks push pools' prices down, bids push them up; a book crossed on
         // both sides may need alternating passes. Bounded by maxFills.
