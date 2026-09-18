@@ -36,13 +36,23 @@ interface IPerpPoolFactory {
 /// decimal grid (`MAX_PRICE_SIG_DIGITS`) that is a pure function of the price
 /// rather than a tick some first caller gets to fix forever.
 ///
-/// Matching routes across every spot pool of this pair (`spotPools`), not a
-/// single pool. Each hop picks whichever pool has the most room left before
-/// its *average* post-fee fill price would reach the order's limit, and
-/// drains it to exactly that point; visiting the roomiest pool first is what
-/// maximises how much of the order clears inside the hop budget. `maxFills`
-/// bounds pool-hops and dead-node cleanup, not orders — a single order
-/// filled across three pools spends three fills.
+/// An order fills from two sources, whichever is better at the margin.
+///
+/// Against the pools, each hop picks whichever of this pair's spot pools has
+/// the most room left before its *average* post-fee fill price would reach
+/// the target, and drains it to exactly that point; visiting the roomiest
+/// pool first is what maximises how much of the order clears inside the hop
+/// budget. The target is the order's own limit, or the opposite side of the
+/// book when the book is crossed — so a pool is used only while it beats the
+/// standing counterparty.
+///
+/// Against the book, a crossed ask and bid fill each other directly at the
+/// resting order's price, paying no pool fee. Together the two rules mean an
+/// order never routes past a counterparty that is offering better, and never
+/// takes the book when a pool is cheaper.
+///
+/// `maxFills` bounds pool-hops, direct fills and dead-node cleanup, not
+/// orders — a single order filled across three pools spends three fills.
 contract Pair is IPair, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -401,12 +411,131 @@ contract Pair is IPair, ReentrancyGuard {
         uint256 fills;
         // Asks push pools' prices down, bids push them up; a book crossed on
         // both sides may need alternating passes. Bounded by maxFills.
+        //
+        // Pools run first, but capped at the opposite side of the book rather
+        // than at the order's own limit (`_sellTarget`/`_buyTarget`). A pool
+        // is therefore only ever used while it beats the resting order on the
+        // other side, and `_matchBook` takes over from the point where it
+        // stops — so a fill always comes from whichever source is better at
+        // the margin, and never routes past a standing counterparty.
         while (fills < maxFills) {
             uint256 before = fills;
             fills = _matchSide(Side.SELL, fills, maxFills);
             fills = _matchSide(Side.BUY, fills, maxFills);
+            fills = _matchBook(fills, maxFills);
             if (fills == before) break;
         }
+    }
+
+    /// @dev Fill the book directly against itself while it is crossed.
+    ///
+    /// Execution price is the resting order's — the older of the two by id —
+    /// which is ordinary price-time priority. Both makers end up inside their
+    /// own limits by construction, and neither pays a pool fee.
+    ///
+    /// Dead and expired heads are `_matchSide`'s job: it pops them (charging a
+    /// fill each), and the next pass of `_match` picks up here again.
+    function _matchBook(uint256 fills, uint256 maxFills) internal returns (uint256) {
+        while (fills < maxFills) {
+            uint256 askPrice = bestAskPrice;
+            uint256 bidPrice = bestBidPrice;
+            if (askPrice == 0 || bidPrice == 0 || bidPrice < askPrice) break;
+
+            Level storage askLevel = askLevels[askPrice];
+            Level storage bidLevel = bidLevels[bidPrice];
+            uint256 askId = askLevel.headOrder;
+            uint256 bidId = bidLevel.headOrder;
+            if (askId == 0 || bidId == 0) break;
+
+            Order storage ask = orders[askId];
+            Order storage bid = orders[bidId];
+            if (ask.status != Status.OPEN || bid.status != Status.OPEN) break;
+            if (ask.expiry <= block.timestamp || bid.expiry <= block.timestamp) break;
+
+            if (!_fillPair(askLevel, bidLevel, ask, bid, askId, bidId)) break;
+            fills++;
+
+            if (ask.status == Status.FILLED) {
+                askLevel.headOrder = ask.nextInLevel;
+                if (askLevel.headOrder == 0) askLevel.tailOrder = 0;
+                if (askLevel.totalBase == 0) _unlinkLevel(Side.SELL, askPrice);
+            }
+            if (bid.status == Status.FILLED) {
+                bidLevel.headOrder = bid.nextInLevel;
+                if (bidLevel.headOrder == 0) bidLevel.tailOrder = 0;
+                if (bidLevel.totalBase == 0) _unlinkLevel(Side.BUY, bidPrice);
+            }
+        }
+        return fills;
+    }
+
+    /// @dev One direct fill between a crossed ask and bid. Both sides' escrow
+    /// is already held by this contract, so the fill is two transfers and no
+    /// external call — `OrderFilled` carries this contract's own address in
+    /// place of a pool to mark it.
+    function _fillPair(
+        Level storage askLevel,
+        Level storage bidLevel,
+        Order storage ask,
+        Order storage bid,
+        uint256 askId,
+        uint256 bidId
+    ) internal returns (bool) {
+        // The older id is the order that was resting, and the resting order
+        // sets the price.
+        uint256 execPrice = askId < bidId ? ask.priceX18 : bid.priceX18;
+
+        uint256 q = Math.min(
+            ask.escrowRemaining,
+            Math.min(bid.amountBase - bid.filledBase, Math.mulDiv(bid.escrowRemaining, 1e18, execPrice))
+        );
+        if (q == 0) return false;
+        uint256 quoteAmt = Math.mulDiv(q, execPrice, 1e18);
+        // Dust below one quote unit would hand the ask's base over for free.
+        if (quoteAmt == 0) return false;
+
+        ask.escrowRemaining -= q;
+        ask.filledBase += q;
+        askLevel.totalBase -= q;
+
+        bid.escrowRemaining -= quoteAmt;
+        bid.filledBase += q;
+        bidLevel.totalBase -= q;
+
+        IERC20(base).safeTransfer(bid.maker, q);
+        IERC20(quote).safeTransfer(ask.maker, quoteAmt);
+        emit OrderFilled(askId, address(this), q, quoteAmt);
+        emit OrderFilled(bidId, address(this), q, quoteAmt);
+
+        if (ask.escrowRemaining == 0) {
+            ask.status = Status.FILLED;
+            emit OrderClosed(askId, Status.FILLED, 0);
+        }
+        if (bid.filledBase >= bid.amountBase || bid.escrowRemaining == 0) {
+            uint256 leftoverBase = bid.amountBase - bid.filledBase;
+            if (leftoverBase > 0) bidLevel.totalBase -= leftoverBase;
+            bid.status = Status.FILLED;
+            uint256 refund = bid.escrowRemaining;
+            bid.escrowRemaining = 0;
+            if (refund > 0) IERC20(quote).safeTransfer(bid.maker, refund);
+            emit OrderClosed(bidId, Status.FILLED, refund);
+        }
+        return true;
+    }
+
+    /// @dev Price a pool fill for this ask has to beat: its own limit, or the
+    /// best bid when the book is crossed. Selling into a pool below a bid that
+    /// is already willing to pay more would give the maker's base away cheap.
+    function _sellTarget(uint256 orderPrice) internal view returns (uint256) {
+        uint256 bid = bestBidPrice;
+        return bid > orderPrice ? bid : orderPrice;
+    }
+
+    /// @dev Mirror of `_sellTarget`: buying from a pool above a standing ask
+    /// would overpay for base the book already offers cheaper.
+    function _buyTarget(uint256 orderPrice) internal view returns (uint256) {
+        uint256 ask = bestAskPrice;
+        return (ask != 0 && ask < orderPrice) ? ask : orderPrice;
     }
 
     function _matchSide(Side side, uint256 fills, uint256 maxFills) internal returns (uint256) {
@@ -473,7 +602,7 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     function _fillBestSell(Level storage level, Order storage order, uint256 orderId) internal returns (bool) {
-        uint256 price = order.priceX18;
+        uint256 price = _sellTarget(order.priceX18);
         (address pool, uint256 dxMax, uint256 g, uint256 reserveBase, uint256 reserveQuote) = _bestSellPool(price);
         if (pool == address(0)) return false;
         uint256 dx = Math.min(dxMax, order.escrowRemaining);
@@ -504,7 +633,7 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     function _fillBestBuy(Level storage level, Order storage order, uint256 orderId) internal returns (bool) {
-        uint256 price = order.priceX18;
+        uint256 price = _buyTarget(order.priceX18);
         (address pool, uint256 dqMax, uint256 g, uint256 reserveBase, uint256 reserveQuote) = _bestBuyPool(price);
         if (pool == address(0)) return false;
 
