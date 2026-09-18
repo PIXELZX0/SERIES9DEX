@@ -79,7 +79,11 @@ contract PairTest is Test {
         id = pair.placeOrder(IPair.Side.BUY, price, amount, expiry, 0);
     }
 
-    function _order(uint256 id) internal view returns (IPair.Status status, uint256 filledBase, uint256 escrowRemaining) {
+    function _order(uint256 id)
+        internal
+        view
+        returns (IPair.Status status, uint256 filledBase, uint256 escrowRemaining)
+    {
         (,, status,,,, filledBase, escrowRemaining,) = pair.orders(id);
     }
 
@@ -463,8 +467,7 @@ contract PairTest is Test {
         _placeSell(4.7e18, 2 ether);
         _placeSell(4.6e18, 3 ether);
 
-        (uint256[] memory prices, uint256[] memory totals, uint256 cursor) =
-            pair.levels(IPair.Side.SELL, 0, 2);
+        (uint256[] memory prices, uint256[] memory totals, uint256 cursor) = pair.levels(IPair.Side.SELL, 0, 2);
         assertEq(prices.length, 2);
         assertEq(prices[0], 4.5e18); // best ask first
         assertEq(prices[1], 4.6e18);

@@ -151,7 +151,13 @@ contract Pair is IPair, ReentrancyGuard {
     event SpotPoolCreated(address indexed pool, address indexed creator, uint32 lpFeeRatePpm);
     event PerpPoolCreated(address indexed pool, address indexed creator, address quoteToken, uint32 lpFeeRatePpm);
     event OrderPlaced(
-        uint256 indexed orderId, address indexed maker, Side side, uint256 priceX18, uint256 amountBase, uint256 escrowed, uint64 expiry
+        uint256 indexed orderId,
+        address indexed maker,
+        Side side,
+        uint256 priceX18,
+        uint256 amountBase,
+        uint256 escrowed,
+        uint64 expiry
     );
     event OrderFilled(uint256 indexed orderId, address indexed pool, uint256 baseFilled, uint256 quoteAmount);
     event OrderClosed(uint256 indexed orderId, Status status, uint256 refunded);
@@ -211,9 +217,8 @@ contract Pair is IPair, ReentrancyGuard {
         address factory = IDexRegistry(registry).perpPoolFactory();
         if (factory == address(0)) revert FactoryNotSet();
         address baseToken = quoteToken == base ? quote : base;
-        pool = IPerpPoolFactory(factory).deploy(
-            IDexRegistry(registry).treasury(), spotPool, baseToken, quoteToken, lpFeeRatePpm, params
-        );
+        pool = IPerpPoolFactory(factory)
+            .deploy(IDexRegistry(registry).treasury(), spotPool, baseToken, quoteToken, lpFeeRatePpm, params);
         perpPools.push(pool);
         perpFeeUsed[quoteToken][lpFeeRatePpm] = true;
         IDexRegistry(registry).registerPool(pool, false);
@@ -240,7 +245,11 @@ contract Pair is IPair, ReentrancyGuard {
         totalBase = priceX18 == 0 ? 0 : askLevels[priceX18].totalBase;
     }
 
-    function levelOf(Side side, uint256 priceX18) external view returns (bool active, uint256 totalBase, uint256 nextPrice) {
+    function levelOf(Side side, uint256 priceX18)
+        external
+        view
+        returns (bool active, uint256 totalBase, uint256 nextPrice)
+    {
         Level storage level = side == Side.BUY ? bidLevels[priceX18] : askLevels[priceX18];
         return (level.active, level.totalBase, level.nextPrice);
     }
@@ -296,8 +305,8 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     function isCanonicalFeeTier(uint32 lpFeeRatePpm) public pure returns (bool) {
-        return lpFeeRatePpm == FEE_TIER_LOWEST || lpFeeRatePpm == FEE_TIER_LOW
-            || lpFeeRatePpm == FEE_TIER_MEDIUM || lpFeeRatePpm == FEE_TIER_HIGH;
+        return lpFeeRatePpm == FEE_TIER_LOWEST || lpFeeRatePpm == FEE_TIER_LOW || lpFeeRatePpm == FEE_TIER_MEDIUM
+            || lpFeeRatePpm == FEE_TIER_HIGH;
     }
 
     /// @notice Whether `priceX18` sits on the decimal grid `placeOrder` accepts.
@@ -455,9 +464,8 @@ contract Pair is IPair, ReentrancyGuard {
         returns (bool filledSomething, uint256 hopsUsed)
     {
         while (hopsUsed < hopBudget && order.status == Status.OPEN) {
-            bool ok = order.side == Side.SELL
-                ? _fillBestSell(level, order, orderId)
-                : _fillBestBuy(level, order, orderId);
+            bool ok =
+                order.side == Side.SELL ? _fillBestSell(level, order, orderId) : _fillBestBuy(level, order, orderId);
             if (!ok) break;
             hopsUsed++;
             filledSomething = true;
@@ -504,7 +512,8 @@ contract Pair is IPair, ReentrancyGuard {
         uint256 dq = Math.min(dqMax, order.escrowRemaining);
         // Spend needed to buy the full remainder outright (getAmountIn).
         if (remainingBase < reserveBase) {
-            uint256 effInFull = Math.mulDiv(reserveQuote, remainingBase, reserveBase - remainingBase, Math.Rounding.Ceil);
+            uint256 effInFull =
+                Math.mulDiv(reserveQuote, remainingBase, reserveBase - remainingBase, Math.Rounding.Ceil);
             uint256 dqFull = Math.mulDiv(effInFull, PPM, g, Math.Rounding.Ceil);
             dq = Math.min(dq, dqFull);
         }
@@ -594,7 +603,11 @@ contract Pair is IPair, ReentrancyGuard {
         }
     }
 
-    function _poolFeeAndReserves(address pool) internal view returns (uint256 g, uint256 reserveBase, uint256 reserveQuote) {
+    function _poolFeeAndReserves(address pool)
+        internal
+        view
+        returns (uint256 g, uint256 reserveBase, uint256 reserveQuote)
+    {
         ISpotPool spot = ISpotPool(pool);
         g = PPM - spot.lpFeeRatePpm();
         (reserveBase, reserveQuote,) = spot.getReserves();
@@ -602,7 +615,11 @@ contract Pair is IPair, ReentrancyGuard {
 
     // ------------------------------------------------------------- internals
 
-    function _sellOut(uint256 reserveBase, uint256 reserveQuote, uint256 g, uint256 dx) internal pure returns (uint256) {
+    function _sellOut(uint256 reserveBase, uint256 reserveQuote, uint256 g, uint256 dx)
+        internal
+        pure
+        returns (uint256)
+    {
         uint256 effIn = g * dx;
         return Math.mulDiv(reserveQuote, effIn, reserveBase * PPM + effIn);
     }

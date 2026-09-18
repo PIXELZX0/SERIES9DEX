@@ -48,8 +48,11 @@ contract PairHandler is Test {
         ttl = bound(ttl, 60, 30 days);
         MockERC20 token = sell ? base : quote;
         token.mint(address(this), amount * price / 1e18 + amount + 1 ether);
-        try pair.placeOrder(sell ? IPair.Side.SELL : IPair.Side.BUY, price, amount, uint64(block.timestamp + ttl), 0)
-        returns (uint256 id) {
+        try pair.placeOrder(
+            sell ? IPair.Side.SELL : IPair.Side.BUY, price, amount, uint64(block.timestamp + ttl), 0
+        ) returns (
+            uint256 id
+        ) {
             myOrders.push(id);
         } catch {}
     }

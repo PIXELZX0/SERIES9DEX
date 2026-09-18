@@ -90,8 +90,7 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     function predictPairAddress(address tokenX, address tokenY) external view returns (address) {
         (address t0, address t1) = PairKey.sort(tokenX, tokenY);
         bytes32 salt = PairKey.pairId(t0, t1);
-        bytes32 initCodeHash =
-            keccak256(abi.encodePacked(type(Pair).creationCode, abi.encode(address(this), t0, t1)));
+        bytes32 initCodeHash = keccak256(abi.encodePacked(type(Pair).creationCode, abi.encode(address(this), t0, t1)));
         return Create2.computeAddress(salt, initCodeHash);
     }
 

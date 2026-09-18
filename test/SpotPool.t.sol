@@ -54,7 +54,9 @@ contract SpotPoolTest is Test {
         tokenB = new MockERC20("Token B", "TKB", 18);
         (token0, token1) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
-        pool = new SpotPool(address(registry), address(mockPair), address(treasury), address(token0), address(token1), FEE_PPM);
+        pool = new SpotPool(
+            address(registry), address(mockPair), address(treasury), address(token0), address(token1), FEE_PPM
+        );
 
         for (uint256 i = 0; i < 2; i++) {
             MockERC20 t = i == 0 ? token0 : token1;
