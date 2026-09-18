@@ -140,7 +140,7 @@ jobs:
           set -euo pipefail
           ABI_DIR="release-abis-${SLUG}"
           mkdir -p "$ABI_DIR"
-          for name in DexRegistry ProtocolTreasury Orderbook SpotPool SpotPoolFactory PerpPool PerpPoolFactory DexPositionManager; do
+          for name in DexRegistry ProtocolTreasury Pair SpotPool SpotPoolFactory PerpPool PerpPoolFactory DexPositionManager DexRouter; do
             jq '.abi' "out/${name}.sol/${name}.json" > "$ABI_DIR/${name}.abi.json"
           done
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
@@ -219,10 +219,10 @@ jobs:
 
           verify "$TREASURY_IMPL" "src/ProtocolTreasury.sol:ProtocolTreasury"
           verify "$REGISTRY_IMPL" "src/DexRegistry.sol:DexRegistry"
-          verify "$(get orderbook)" "src/Orderbook.sol:Orderbook" "$REGISTRY_ARG"
           verify "$(get spotPoolFactory)" "src/SpotPoolFactory.sol:SpotPoolFactory" "$REGISTRY_ARG"
           verify "$(get perpPoolFactory)" "src/PerpPoolFactory.sol:PerpPoolFactory" "$REGISTRY_ARG"
           verify "$(get dexPositionManager)" "src/DexPositionManager.sol:DexPositionManager" "$REGISTRY_ARG"
+          verify "$(get dexRouter)" "src/DexRouter.sol:DexRouter" "$REGISTRY_ARG"
 
           verify "$TREASURY" "$PROXY_PATH" \
             "$(cast abi-encode 'constructor(address,bytes)' "$TREASURY_IMPL" \
@@ -248,7 +248,7 @@ jobs:
             printf '%s' "${status:-none}"
           }
 
-          for addr in $(jq -r 'to_entries[] | select(.key | test("Impl|Proxy|orderbook|Factory|PositionManager")) | .value' "$ADDRESSES"); do
+          for addr in $(jq -r 'to_entries[] | select(.key | test("Impl|Proxy|Factory|PositionManager|Router")) | .value' "$ADDRESSES"); do
             STATUS=none
             for attempt in 1 2 3 4 5 6; do
               STATUS="$(sourcify_match "$addr")"

@@ -2,9 +2,9 @@
 # Post-deploy on-chain checks. Reads the labeled address record written by
 # DeployDex.s.sol and compares it against what the chain actually says.
 #
-# setOrderbook is one-shot (OrderbookAlreadySet), so a mis-wired registry can
-# only be fixed by redeploying the whole stack. Fail loudly, before anyone
-# publishes the addresses.
+# Pools and pairs are immutable once deployed and the registry only ever
+# points at one pair of factories, so a mis-wired stack can only be fixed by
+# redeploying it. Fail loudly, before anyone publishes the addresses.
 #
 # Usage: RPC_URL=... SAFE_ADDRESS=0x... ./script/assert-deployment.sh deployments/143.json
 set -euo pipefail
@@ -16,10 +16,10 @@ ADDRESSES="${1:-${ADDRESSES:?path to deployments/<chainid>.json required}}"
 get() { jq -r ".$1" "$ADDRESSES"; }
 TREASURY="$(get protocolTreasuryProxy)"
 REGISTRY="$(get dexRegistryProxy)"
-ORDERBOOK="$(get orderbook)"
 SPOT_FACTORY="$(get spotPoolFactory)"
 PERP_FACTORY="$(get perpPoolFactory)"
 POSITION_MANAGER="$(get dexPositionManager)"
+ROUTER="$(get dexRouter)"
 
 fail=0
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
@@ -36,12 +36,11 @@ call() { cast call "$1" "$2" --rpc-url "$RPC_URL"; }
 check "registry.owner()"           "$SAFE_ADDRESS" "$(call "$REGISTRY" 'owner()(address)')"
 check "treasury.owner()"           "$SAFE_ADDRESS" "$(call "$TREASURY" 'owner()(address)')"
 check "registry.treasury()"        "$TREASURY"     "$(call "$REGISTRY" 'treasury()(address)')"
-check "registry.orderbook()"       "$ORDERBOOK"    "$(call "$REGISTRY" 'orderbook()(address)')"
 check "registry.spotPoolFactory()" "$SPOT_FACTORY" "$(call "$REGISTRY" 'spotPoolFactory()(address)')"
 check "registry.perpPoolFactory()" "$PERP_FACTORY" "$(call "$REGISTRY" 'perpPoolFactory()(address)')"
-check "orderbook.registry()"       "$REGISTRY"     "$(call "$ORDERBOOK" 'registry()(address)')"
 check "spotPoolFactory.registry()" "$REGISTRY"     "$(call "$SPOT_FACTORY" 'registry()(address)')"
 check "perpPoolFactory.registry()" "$REGISTRY"     "$(call "$PERP_FACTORY" 'registry()(address)')"
 check "positionManager.registry()" "$REGISTRY"     "$(call "$POSITION_MANAGER" 'registry()(address)')"
+check "router.registry()"          "$REGISTRY"     "$(call "$ROUTER" 'registry()(address)')"
 
 exit $fail
