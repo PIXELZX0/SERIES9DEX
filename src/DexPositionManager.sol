@@ -41,6 +41,7 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
     mapping(uint256 => Position) public positions;
 
     error ZeroAddress();
+    error Expired();
     error ZeroAmount();
     error UnknownPool();
     error WrongPoolKind();
@@ -58,6 +59,14 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         registry = registry_;
     }
 
+    /// @dev The pools take no deadline of their own, so a transaction that
+    /// sits unmined can otherwise execute at any later block. The min-amount
+    /// arguments bound the price, not when it is paid.
+    modifier ensure(uint256 deadline) {
+        if (block.timestamp > deadline) revert Expired();
+        _;
+    }
+
     // ------------------------------------------------------------------ spot
 
     function mintSpot(
@@ -66,8 +75,9 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         uint256 amount1Desired,
         uint256 amount0Min,
         uint256 amount1Min,
-        address to
-    ) external nonReentrant returns (uint256 tokenId, uint256 liquidity) {
+        address to,
+        uint256 deadline
+    ) external nonReentrant ensure(deadline) returns (uint256 tokenId, uint256 liquidity) {
         _requireSpotPool(pool);
         liquidity = _addSpot(pool, amount0Desired, amount1Desired, amount0Min, amount1Min);
         tokenId = _mintPosition(pool, true, liquidity, to);
@@ -80,8 +90,9 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         uint256 amount0Desired,
         uint256 amount1Desired,
         uint256 amount0Min,
-        uint256 amount1Min
-    ) external nonReentrant returns (uint256 liquidity) {
+        uint256 amount1Min,
+        uint256 deadline
+    ) external nonReentrant ensure(deadline) returns (uint256 liquidity) {
         Position storage pos = positions[tokenId];
         _requireOwned(tokenId);
         if (!pos.isSpot) revert WrongPoolKind();
@@ -90,11 +101,14 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         emit LiquidityIncreased(tokenId, liquidity, pos.liquidity);
     }
 
-    function decreaseSpot(uint256 tokenId, uint256 liquidity, uint256 amount0Min, uint256 amount1Min, address to)
-        external
-        nonReentrant
-        returns (uint256 amount0, uint256 amount1)
-    {
+    function decreaseSpot(
+        uint256 tokenId,
+        uint256 liquidity,
+        uint256 amount0Min,
+        uint256 amount1Min,
+        address to,
+        uint256 deadline
+    ) external nonReentrant ensure(deadline) returns (uint256 amount0, uint256 amount1) {
         Position storage pos = _authorizedPosition(tokenId, true);
         if (liquidity == 0) revert ZeroAmount();
         if (liquidity > pos.liquidity) revert InsufficientPositionLiquidity();
@@ -105,9 +119,10 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
 
     // ------------------------------------------------------------------ perp
 
-    function mintPerp(address pool, uint256 quoteIn, uint256 minShares, address to)
+    function mintPerp(address pool, uint256 quoteIn, uint256 minShares, address to, uint256 deadline)
         external
         nonReentrant
+        ensure(deadline)
         returns (uint256 tokenId, uint256 shares)
     {
         _requirePerpPool(pool);
@@ -115,9 +130,10 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         tokenId = _mintPosition(pool, false, shares, to);
     }
 
-    function increasePerp(uint256 tokenId, uint256 quoteIn, uint256 minShares)
+    function increasePerp(uint256 tokenId, uint256 quoteIn, uint256 minShares, uint256 deadline)
         external
         nonReentrant
+        ensure(deadline)
         returns (uint256 shares)
     {
         Position storage pos = positions[tokenId];
@@ -128,9 +144,10 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         emit LiquidityIncreased(tokenId, shares, pos.liquidity);
     }
 
-    function decreasePerp(uint256 tokenId, uint256 shares, uint256 minQuoteOut, address to)
+    function decreasePerp(uint256 tokenId, uint256 shares, uint256 minQuoteOut, address to, uint256 deadline)
         external
         nonReentrant
+        ensure(deadline)
         returns (uint256 quoteOut)
     {
         Position storage pos = _authorizedPosition(tokenId, false);

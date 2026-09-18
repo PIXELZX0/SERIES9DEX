@@ -51,6 +51,14 @@ contract PerpPool is ReentrancyGuard {
     /// than the bounty does.
     uint256 public constant LIQ_REWARD_FLOOR_BPS = 10;
     uint256 internal constant BPS = 1e4;
+    /// @dev ppm * seconds-per-hour * X18, the combined scale of the funding
+    /// accrual's three divisors.
+    uint256 internal constant FUNDING_DENOMINATOR = 1e6 * 3600 * 1e18;
+
+    /// @notice Burned to 0xdead on the first deposit, mirroring SpotPool: it
+    /// puts a floor under totalShares so the share price cannot be set by
+    /// whoever deposits one wei first.
+    uint256 public constant MINIMUM_LIQUIDITY = 1000;
 
     address public immutable registry;
     address public immutable treasury;
@@ -206,8 +214,13 @@ contract PerpPool is ReentrancyGuard {
             bool longPays = longSizeBase > shortSizeBase;
             uint256 imbalanceX18 =
                 (longPays ? longSizeBase - shortSizeBase : shortSizeBase - longSizeBase) * 1e18 / totalOI;
-            // quote per base (X18) accrued over dt
-            uint256 deltaX18 = Math.mulDiv(uint256(fundingCoeffPpmPerHour) * imbalanceX18 / 1e6, mark * dt / 3600, 1e18);
+            // Quote per base (X18) accrued over dt:
+            //   coeff/1e6 * imbalanceX18/1e18 * dt/3600 * mark
+            // as a single mulDiv. Splitting it truncated three times, and on a
+            // small imbalance or a short dt each intermediate could floor to
+            // zero and drop the accrual entirely.
+            uint256 deltaX18 =
+                Math.mulDiv(uint256(fundingCoeffPpmPerHour) * imbalanceX18, mark * dt, FUNDING_DENOMINATOR);
             if (deltaX18 > 0) {
                 if (longPays) cumFundingLongX18 += deltaX18;
                 else cumFundingShortX18 += deltaX18;
@@ -235,7 +248,9 @@ contract PerpPool is ReentrancyGuard {
         uint256 credited = _pull(quoteIn);
         uint256 supply = totalShares;
         if (supply == 0) {
-            shares = credited;
+            if (credited <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
+            shares = credited - MINIMUM_LIQUIDITY;
+            _mintShares(address(0xdead), MINIMUM_LIQUIDITY);
         } else {
             uint256 equity = lpEquity();
             if (equity == 0) revert InsufficientLiquidity(); // vault wiped; new LPs must not mint against zero

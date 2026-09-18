@@ -297,4 +297,38 @@ contract SpotPoolTest is Test {
         assertLe(token0.balanceOf(bob), bal0Before);
         assertLe(token1.balanceOf(bob), bal1Before);
     }
+
+    // ------------------------------------------------------------------ skim
+
+    function testSkimReturnsOnlyUnaccountedBalance() public {
+        _addLiquidity(alice, 100 ether, 400 ether);
+        // Fees the treasury is owed sit in the pool's balance but are not the
+        // pool's; skimming them would be stealing from the treasury.
+        vm.prank(bob);
+        pool.swapExactIn(address(token0), 10 ether, 0, bob);
+        uint256 fees0 = pool.protocolFees0();
+        assertGt(fees0, 0);
+
+        token0.mint(address(pool), 7 ether); // stray transfer
+        (uint256 r0, uint256 r1,) = pool.getReserves();
+
+        uint256 before = token0.balanceOf(alice);
+        pool.skim(alice);
+        assertEq(token0.balanceOf(alice) - before, 7 ether);
+
+        // Reserves and the treasury's claim are untouched.
+        (uint256 r0After, uint256 r1After,) = pool.getReserves();
+        assertEq(r0After, r0);
+        assertEq(r1After, r1);
+        assertEq(pool.protocolFees0(), fees0);
+
+        // Nothing left over, so a second skim moves nothing.
+        uint256 mid = token0.balanceOf(alice);
+        pool.skim(alice);
+        assertEq(token0.balanceOf(alice), mid);
+
+        // And the treasury can still be paid in full.
+        pool.collectProtocolFees();
+        assertEq(token0.balanceOf(address(treasury)), fees0);
+    }
 }
