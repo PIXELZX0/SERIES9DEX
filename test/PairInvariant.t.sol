@@ -41,8 +41,11 @@ contract PairHandler is Test {
     }
 
     function place(uint256 price, uint256 amount, bool sell, uint256 ttl) external {
-        price = bound(price, 1e15, 100e18);
-        price = price - (price % 1e15); // tick align
+        // Straddles the pools' 4.0 price, so both sides overlap constantly:
+        // this is what drives crossed books into direct `_fillPair` matching
+        // and makes the book compete with the pools on price.
+        price = bound(price, 1e18, 10e18);
+        price = price - (price % 1e15); // keep inside the significant-digit grid
         if (price == 0) price = 1e15;
         amount = bound(amount, 0.01 ether, 100 ether);
         ttl = bound(ttl, 60, 30 days);
