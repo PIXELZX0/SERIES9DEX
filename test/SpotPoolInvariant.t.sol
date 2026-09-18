@@ -7,8 +7,8 @@ import {DexRegistry} from "../src/DexRegistry.sol";
 import {ProtocolTreasury} from "../src/ProtocolTreasury.sol";
 import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
+import {Pair} from "../src/Pair.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockOrderbook} from "./mocks/MockOrderbook.sol";
 
 contract SpotPoolHandler is Test {
     SpotPool public immutable pool;
@@ -84,13 +84,13 @@ contract SpotPoolInvariantTest is Test {
         );
         SpotPoolFactory factory = new SpotPoolFactory(address(registry));
         vm.startPrank(owner);
-        registry.setOrderbook(address(new MockOrderbook()));
         registry.setFactories(address(factory), address(0));
         vm.stopPrank();
 
         MockERC20 tokenA = new MockERC20("A", "A", 18);
         MockERC20 tokenB = new MockERC20("B", "B", 18);
-        pool = SpotPool(registry.createSpotPool(address(tokenA), address(tokenB), 3000, 1e15));
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        pool = SpotPool(pair.createSpotPool(3000));
         token0 = MockERC20(pool.token0());
         token1 = MockERC20(pool.token1());
 

@@ -40,6 +40,16 @@ contract PerpPool is ReentrancyGuard {
     }
 
     uint256 public constant MIN_TWAP_WINDOW = 300;
+    /// @notice Longest span a single TWAP sample may cover. A pool nobody
+    /// touches accumulates an ever-wider window, and without this the next
+    /// poke would install a multi-day average as the mark and liquidate
+    /// against it. Past this the sample is dropped rather than trusted.
+    uint256 public constant MAX_TWAP_WINDOW = 3600;
+    /// @notice Liquidator bounty floor, as bps of the closed notional. A
+    /// position that gapped straight through maintenance leaves no equity to
+    /// take a cut of, and an unliquidated position costs the vault far more
+    /// than the bounty does.
+    uint256 public constant LIQ_REWARD_FLOOR_BPS = 10;
     uint256 internal constant BPS = 1e4;
 
     address public immutable registry;
@@ -49,7 +59,7 @@ contract PerpPool is ReentrancyGuard {
     address public immutable quoteToken;
     bool public immutable baseIsToken0;
     uint32 public immutable lpFeeRatePpm;
-    bytes32 public immutable pairId;
+    address public immutable pair;
     uint32 public immutable maxLeverageX;
     uint32 public immutable maintenanceMarginBps;
     uint32 public immutable liquidationFeeBps;
@@ -117,7 +127,7 @@ contract PerpPool is ReentrancyGuard {
         address baseToken_,
         address quoteToken_,
         uint32 lpFeeRatePpm_,
-        bytes32 pairId_,
+        address pair_,
         PerpParams memory params
     ) {
         registry = registry_;
@@ -127,7 +137,7 @@ contract PerpPool is ReentrancyGuard {
         quoteToken = quoteToken_;
         baseIsToken0 = ISpotPool(spotPool_).token0() == baseToken_;
         lpFeeRatePpm = lpFeeRatePpm_;
-        pairId = pairId_;
+        pair = pair_;
         maxLeverageX = params.maxLeverageX;
         maintenanceMarginBps = params.maintenanceMarginBps;
         liquidationFeeBps = params.liquidationFeeBps;
@@ -155,7 +165,18 @@ contract PerpPool is ReentrancyGuard {
             return cachedMarkX18;
         }
         uint256 elapsed = block.timestamp - twapTsCheckpoint;
-        if (elapsed >= MIN_TWAP_WINDOW) {
+        if (elapsed > MAX_TWAP_WINDOW) {
+            // Too much history in one sample to be a mark. Drop it and open a
+            // fresh window; position ops revert MarkNotReady until one full
+            // MIN_TWAP_WINDOW has passed, which is the point — a stale pool
+            // should block trading, not price it off a week-old average.
+            if (cachedMarkX18 != 0) {
+                cachedMarkX18 = 0;
+                emit MarkUpdated(0);
+            }
+            twapCumCheckpoint = cum;
+            twapTsCheckpoint = uint64(block.timestamp);
+        } else if (elapsed >= MIN_TWAP_WINDOW) {
             unchecked {
                 cachedMarkX18 = (cum - twapCumCheckpoint) / elapsed;
             }
@@ -318,9 +339,11 @@ contract PerpPool is ReentrancyGuard {
         (uint256 totalFee,,) = FeeSplit.split(closeNotional, lpFeeRatePpm);
         totalFee = Math.min(totalFee, payout);
         payout -= totalFee;
-        uint256 protocolFee = totalFee / 1000;
+        // Re-split the capped fee rather than restating the protocol cut by
+        // hand here, which is how the two fee paths drift apart.
+        (uint256 protocolFee, uint256 lpFee) = FeeSplit.splitFee(totalFee);
         protocolFeesQuote += protocolFee;
-        totalLiquidity += totalFee - protocolFee;
+        totalLiquidity += lpFee;
 
         pos.sizeBase -= sizeBaseReduce;
         pos.entryNotional -= notionalPortion;
@@ -386,12 +409,19 @@ contract PerpPool is ReentrancyGuard {
             ? closeNotional.toInt256() - entryNotional.toInt256()
             : entryNotional.toInt256() - closeNotional.toInt256();
 
-        // Trader forfeits remaining equity: liquidator takes the fee cut,
-        // the rest goes to the LP vault. Bad debt is absorbed by the vault
-        // implicitly (it simply never receives the shortfall).
+        // Trader forfeits remaining equity to the LP vault; the liquidator is
+        // then paid out of it. Bad debt is absorbed by the vault implicitly
+        // (it simply never receives the shortfall).
         uint256 remaining = _settleAgainstVault(margin, pnl);
-        uint256 reward = remaining * liquidationFeeBps / BPS;
-        totalLiquidity += remaining - reward;
+        totalLiquidity += remaining;
+        // Cut of the forfeited equity, floored at a slice of closed notional
+        // so a position that gapped through maintenance is still worth
+        // liquidating, and capped by what the vault actually holds.
+        uint256 reward = Math.max(
+            Math.mulDiv(remaining, liquidationFeeBps, BPS), Math.mulDiv(closeNotional, LIQ_REWARD_FLOOR_BPS, BPS)
+        );
+        if (reward > totalLiquidity) reward = totalLiquidity;
+        totalLiquidity -= reward;
 
         if (isLong) {
             longSizeBase -= size;

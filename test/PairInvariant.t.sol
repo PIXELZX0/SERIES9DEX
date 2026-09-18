@@ -7,28 +7,37 @@ import {DexRegistry} from "../src/DexRegistry.sol";
 import {ProtocolTreasury} from "../src/ProtocolTreasury.sol";
 import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
-import {Orderbook} from "../src/Orderbook.sol";
+import {Pair} from "../src/Pair.sol";
+import {IPair} from "../src/interfaces/IPair.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
-contract OrderbookHandler is Test {
-    Orderbook public immutable orderbook;
-    SpotPool public immutable pool;
+contract PairHandler is Test {
+    Pair public immutable pair;
+    SpotPool[] public pools;
     MockERC20 internal immutable base;
     MockERC20 internal immutable quote;
-    bytes32 internal immutable pairId;
 
     uint256[] public myOrders;
 
-    constructor(Orderbook orderbook_, SpotPool pool_) {
-        orderbook = orderbook_;
-        pool = pool_;
-        base = MockERC20(pool_.token0());
-        quote = MockERC20(pool_.token1());
-        pairId = pool_.pairId();
-        base.approve(address(orderbook_), type(uint256).max);
-        quote.approve(address(orderbook_), type(uint256).max);
-        base.approve(address(pool_), type(uint256).max);
-        quote.approve(address(pool_), type(uint256).max);
+    constructor(Pair pair_, address token0_, address token1_) {
+        pair = pair_;
+        base = MockERC20(token0_);
+        quote = MockERC20(token1_);
+        base.approve(address(pair_), type(uint256).max);
+        quote.approve(address(pair_), type(uint256).max);
+
+        // Two spot pools with different fees so matching actually has to
+        // route/split across pools rather than degenerate to a single one.
+        uint32[2] memory fees = [uint32(3000), uint32(5000)];
+        for (uint256 i = 0; i < fees.length; i++) {
+            SpotPool p = SpotPool(pair_.createSpotPool(fees[i]));
+            base.approve(address(p), type(uint256).max);
+            quote.approve(address(p), type(uint256).max);
+            base.mint(address(this), 1000 ether);
+            quote.mint(address(this), 4000 ether);
+            p.addLiquidity(1000 ether, 4000 ether, 0, 0, address(this));
+            pools.push(p);
+        }
     }
 
     function place(uint256 price, uint256 amount, bool sell, uint256 ttl) external {
@@ -39,11 +48,8 @@ contract OrderbookHandler is Test {
         ttl = bound(ttl, 60, 30 days);
         MockERC20 token = sell ? base : quote;
         token.mint(address(this), amount * price / 1e18 + amount + 1 ether);
-        try orderbook.placeOrder(
-            pairId, sell ? Orderbook.Side.SELL : Orderbook.Side.BUY, price, amount, uint64(block.timestamp + ttl), 0
-        ) returns (
-            uint256 id
-        ) {
+        try pair.placeOrder(sell ? IPair.Side.SELL : IPair.Side.BUY, price, amount, uint64(block.timestamp + ttl), 0)
+        returns (uint256 id) {
             myOrders.push(id);
         } catch {}
     }
@@ -51,19 +57,20 @@ contract OrderbookHandler is Test {
     function cancel(uint256 index) external {
         if (myOrders.length == 0) return;
         index = bound(index, 0, myOrders.length - 1);
-        try orderbook.cancelOrder(myOrders[index]) {} catch {}
+        try pair.cancelOrder(myOrders[index]) {} catch {}
     }
 
     function doMatch(uint256 maxFills) external {
         maxFills = bound(maxFills, 1, 10);
-        try orderbook.matchOrders(pairId, address(pool), maxFills) {} catch {}
+        try pair.matchOrders(maxFills) {} catch {}
     }
 
-    function swap(uint256 amountIn, bool zeroForOne) external {
+    function swap(uint256 poolIndex, uint256 amountIn, bool zeroForOne) external {
+        poolIndex = bound(poolIndex, 0, pools.length - 1);
         amountIn = bound(amountIn, 0.001 ether, 50 ether);
         MockERC20 tokenIn = zeroForOne ? base : quote;
         tokenIn.mint(address(this), amountIn);
-        try pool.swapExactIn(address(tokenIn), amountIn, 0, address(this)) {} catch {}
+        try pools[poolIndex].swapExactIn(address(tokenIn), amountIn, 0, address(this)) {} catch {}
     }
 
     function warpAndExpire(uint256 dt, uint256 index) external {
@@ -71,7 +78,7 @@ contract OrderbookHandler is Test {
         vm.warp(block.timestamp + dt);
         if (myOrders.length == 0) return;
         index = bound(index, 0, myOrders.length - 1);
-        try orderbook.removeExpired(myOrders[index]) {} catch {}
+        try pair.removeExpired(myOrders[index]) {} catch {}
     }
 
     function orderCount() external view returns (uint256) {
@@ -79,10 +86,9 @@ contract OrderbookHandler is Test {
     }
 }
 
-contract OrderbookInvariantTest is Test {
-    Orderbook internal orderbook;
-    OrderbookHandler internal handler;
-    SpotPool internal pool;
+contract PairInvariantTest is Test {
+    Pair internal pair;
+    PairHandler internal handler;
     MockERC20 internal base;
     MockERC20 internal quote;
 
@@ -100,51 +106,42 @@ contract OrderbookInvariantTest is Test {
                 )
             )
         );
-        orderbook = new Orderbook(address(registry));
         SpotPoolFactory factory = new SpotPoolFactory(address(registry));
         vm.startPrank(owner);
-        registry.setOrderbook(address(orderbook));
         registry.setFactories(address(factory), address(0));
         vm.stopPrank();
 
         MockERC20 tokenA = new MockERC20("A", "A", 18);
         MockERC20 tokenB = new MockERC20("B", "B", 18);
-        pool = SpotPool(registry.createSpotPool(address(tokenA), address(tokenB), 3000, 1e15));
-        base = MockERC20(pool.token0());
-        quote = MockERC20(pool.token1());
+        pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        base = MockERC20(pair.base());
+        quote = MockERC20(pair.quote());
 
-        base.mint(address(this), 1000 ether);
-        quote.mint(address(this), 4000 ether);
-        base.approve(address(pool), type(uint256).max);
-        quote.approve(address(pool), type(uint256).max);
-        pool.addLiquidity(1000 ether, 4000 ether, 0, 0, address(this));
-
-        handler = new OrderbookHandler(orderbook, pool);
+        handler = new PairHandler(pair, address(base), address(quote));
         targetContract(address(handler));
     }
 
-    /// The orderbook holds exactly the sum of open-order escrows, per token.
+    /// The pair holds exactly the sum of open-order escrows, per token.
     function invariant_escrowSolvencyExact() public view {
         uint256 sumBase;
         uint256 sumQuote;
-        for (uint256 id = 1; id < orderbook.nextOrderId(); id++) {
-            (, Orderbook.Side side, Orderbook.Status status,,,,,, uint256 escrow,) = orderbook.orders(id);
-            if (status == Orderbook.Status.OPEN) {
-                if (side == Orderbook.Side.SELL) sumBase += escrow;
+        for (uint256 id = 1; id < pair.nextOrderId(); id++) {
+            (, IPair.Side side, IPair.Status status,,,,, uint256 escrow,) = pair.orders(id);
+            if (status == IPair.Status.OPEN) {
+                if (side == IPair.Side.SELL) sumBase += escrow;
                 else sumQuote += escrow;
             } else {
                 assertEq(escrow, 0);
             }
         }
-        assertEq(base.balanceOf(address(orderbook)), sumBase);
-        assertEq(quote.balanceOf(address(orderbook)), sumQuote);
+        assertEq(base.balanceOf(address(pair)), sumBase);
+        assertEq(quote.balanceOf(address(pair)), sumQuote);
     }
 
     /// Best pointers always reference active levels with liquidity, sorted.
     function invariant_bestPointersSane() public view {
-        bytes32 pairId = pool.pairId();
-        (uint256 bidPrice, uint256 bidTotal) = orderbook.bestBid(pairId);
-        (uint256 askPrice, uint256 askTotal) = orderbook.bestAsk(pairId);
+        (uint256 bidPrice, uint256 bidTotal) = pair.bestBid();
+        (uint256 askPrice, uint256 askTotal) = pair.bestAsk();
         if (bidPrice != 0) assertGt(bidTotal, 0);
         if (askPrice != 0) assertGt(askTotal, 0);
     }

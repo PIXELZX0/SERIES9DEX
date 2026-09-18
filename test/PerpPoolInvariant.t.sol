@@ -9,7 +9,7 @@ import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPool} from "../src/PerpPool.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
-import {Orderbook} from "../src/Orderbook.sol";
+import {Pair} from "../src/Pair.sol";
 import {PerpParams} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
@@ -102,7 +102,6 @@ contract PerpPoolInvariantTest is Test {
             )
         );
         vm.startPrank(owner);
-        registry.setOrderbook(address(new Orderbook(address(registry))));
         registry.setFactories(
             address(new SpotPoolFactory(address(registry))), address(new PerpPoolFactory(address(registry)))
         );
@@ -110,17 +109,14 @@ contract PerpPoolInvariantTest is Test {
 
         MockERC20 tokenA = new MockERC20("A", "A", 18);
         MockERC20 tokenB = new MockERC20("B", "B", 18);
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
         SpotPool spot;
         {
-            spot = SpotPool(registry.createSpotPool(address(tokenA), address(tokenB), 3000, 1e15));
+            spot = SpotPool(pair.createSpotPool(3000));
         }
         MockERC20 base = MockERC20(spot.token0());
         quote = MockERC20(spot.token1());
-        perp = PerpPool(
-            registry.createPerpPool(
-                address(base), address(quote), address(quote), address(spot), 3000, PerpParams(10, 500, 100, 8000, 100)
-            )
-        );
+        perp = PerpPool(pair.createPerpPool(address(quote), address(spot), 3000, PerpParams(10, 500, 100, 8000, 100)));
 
         base.mint(address(this), 10_000 ether);
         quote.mint(address(this), 140_000 ether);

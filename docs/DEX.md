@@ -37,8 +37,8 @@ Series9DEX
 │         ├── Short positions
 │         └── Collateral (USDC 등)
 │
-├── Orderbook (주문 시스템)  ── ALL ON-CHAIN
-│   ├── Market Orders  (시장가)
+├── Pair 내장 오더북 (주문 시스템)  ── ALL ON-CHAIN
+│   ├── Market Orders  (시장가 — DexRouter 경유)
 │   └── Limit Orders   (지정가, 전량 온체인)
 │
 └── DexPositionManager (ERC-721)  ── LP 포지션 소유권
@@ -93,30 +93,40 @@ pairId = keccak256(abi.encodePacked(tokenA, tokenB))
 
 ### 4.2 지정가 주문 (Limit Order) — 전량 온체인
 - 원하는 가격에 도달했을 때 자동 체결.
-- **호가창(Orderbook) 자체가 온체인에 저장·관리**됩니다. 오프체인 relayer 를 두지 않으며, 외부 운영 주체 없이 누구나 체인만 보고 호가를 조회·체결할 수 있습니다.
-- 페어 ID 와 목표 가격(`limitPrice`)을 주문에 포함.
+- **호가창 자체가 온체인에 저장·관리**됩니다. 오프체인 relayer 를 두지 않으며, 외부 운영 주체 없이 누구나 체인만 보고 호가를 조회·체결할 수 있습니다.
+- 호가창은 `Pair` 컨트랙트가 직접 들고 있습니다. 별도 `Orderbook` 싱글턴이나 `bytes32 pairId` 는 없으며, `Pair` 주소 자체가 페어 식별자입니다.
 
-#### 온체인 오더북 구조 (예시)
+#### 온체인 오더북 구조
 ```
-Orderbook (pairId 별)
-├── bids[price]        ── 매수 주문 누적 (price → totalAmount)
-└── asks[price]        ── 매도 주문 누적 (price → totalAmount)
+Pair (페어당 1개 컨트랙트)
+├── bidLevels[price]   ── 매수 레벨 (FIFO 주문 연결 리스트 + totalBase)
+├── askLevels[price]   ── 매도 레벨
+└── bestBidPrice / bestAskPrice ── 가격 정렬 연결 리스트의 헤드
 ```
-- 가격 단위(price tick)는 풀 생성 시 설정.
+- 가격 단위는 **유효숫자 6자리 십진 그리드**로 고정됩니다 (`MAX_PRICE_SIG_DIGITS`).
+  페어별 `tickSize` 설정값이 아니라 가격의 순수 함수라, 선착순으로 고정되는 값이
+  없고 토큰 데시멀 차이가 큰 페어도 그대로 커버됩니다.
+  `Pair.priceIsValid(priceX18)` / `Pair.tickSizeAt(priceX18)` 로 조회합니다.
 - 주문 등록/취소/매칭 모두 트랜잭션으로 발생 — 가스 비용 발생.
-- 누구나 `Orderbook(pairId).bestBid()` / `bestAsk()` 로 호가 조회 가능 (view).
+- 호가 조회: `Pair.bestBid()` / `bestAsk()` (최우선 호가),
+  `Pair.levels(side, startPrice, count)` (depth, 페이지네이션).
+- 주문 조회: `Pair.ordersOfLength(maker)` / `Pair.ordersOf(maker, start, count)`.
 - 매칭 로직은 동일 페어의 **현물 풀(AMM)** 과 대조하여 자동 체결.
+  `maxFills` 는 풀 hop 수와 취소 노드 정리 횟수를 함께 제한합니다.
 
 #### Limit Order 필드 (예시)
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `maker` | `address` | 주문 등록자 |
-| `pairId` | `bytes32` | 페어 ID |
 | `side` | `enum (BUY / SELL)` | 매수/매도 |
-| `price` | `uint256` | 지정 가격 |
-| `amount` | `uint256` | 주문 수량 |
-| `expiry` | `uint256` | 만료 시각 |
+| `priceX18` | `uint256` | 지정 가격 (quote per base, X18) |
+| `amountBase` | `uint256` | 주문 수량 (base) |
+| `filledBase` | `uint256` | 체결 누계 |
+| `escrowRemaining` | `uint256` | 남은 에스크로 (SELL: base, BUY: quote) |
+| `expiry` | `uint64` | 만료 시각 |
 | `status` | `enum (OPEN / FILLED / CANCELLED / EXPIRED)` | 주문 상태 |
+
+페어는 `Pair` 컨트랙트 주소로 식별되므로 주문에 별도 페어 필드가 없습니다.
 
 #### 온체인 오더북의 장단점
 - ✅ **장점:** 단일 진실 공급원, 검열 저항성, 투명한 호가, relayer 의존성 없음.

@@ -11,7 +11,7 @@ struct PerpParams {
 }
 
 interface IPerpPool {
-    function pairId() external view returns (bytes32);
+    function pair() external view returns (address);
     function quoteToken() external view returns (address);
     function baseToken() external view returns (address);
     function lpFeeRatePpm() external view returns (uint32);

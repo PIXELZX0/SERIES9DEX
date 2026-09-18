@@ -9,13 +9,14 @@ import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPool} from "../src/PerpPool.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
-import {Orderbook} from "../src/Orderbook.sol";
+import {Pair} from "../src/Pair.sol";
 import {PerpParams} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 contract PerpPoolTest is Test {
     DexRegistry internal registry;
     ProtocolTreasury internal treasury;
+    Pair internal pair;
     SpotPool internal spot;
     PerpPool internal perp;
     MockERC20 internal base; // token0
@@ -41,9 +42,7 @@ contract PerpPoolTest is Test {
                 )
             )
         );
-        Orderbook orderbook = new Orderbook(address(registry));
         vm.startPrank(owner);
-        registry.setOrderbook(address(orderbook));
         registry.setFactories(
             address(new SpotPoolFactory(address(registry))), address(new PerpPoolFactory(address(registry)))
         );
@@ -53,11 +52,10 @@ contract PerpPoolTest is Test {
         MockERC20 tokenB = new MockERC20("B", "B", 18);
         (base, quote) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
-        spot = SpotPool(registry.createSpotPool(address(base), address(quote), FEE_PPM, 1e15));
+        pair = Pair(registry.createPair(address(base), address(quote)));
+        spot = SpotPool(pair.createSpotPool(FEE_PPM));
         perp = PerpPool(
-            registry.createPerpPool(
-                address(base),
-                address(quote),
+            pair.createPerpPool(
                 address(quote),
                 address(spot),
                 FEE_PPM,
@@ -264,9 +262,10 @@ contract PerpPoolTest is Test {
         uint256 tlBefore = perp.totalLiquidity();
         (, uint256 marginBefore,) = _pos(trader, true);
 
-        vm.warp(block.timestamp + 10 hours);
-        perp.pokeMark();
-        perp.updateFunding();
+        // March the clock in window-sized steps, the way a live pool is
+        // poked. One 10h jump would (correctly) invalidate the mark instead
+        // of pricing funding off a 10-hour-wide TWAP sample.
+        _tick(10, 1 hours);
         assertGt(perp.cumFundingLongX18(), 0);
         assertEq(perp.cumFundingShortX18(), 0);
 
@@ -287,10 +286,40 @@ contract PerpPoolTest is Test {
         perp.openPosition(true, 10_000 ether, 5_000 ether);
         vm.prank(keeper);
         perp.openPosition(false, 10_000 ether, 5_000 ether);
-        vm.warp(block.timestamp + 10 hours);
-        perp.updateFunding();
+        _tick(10, 1 hours);
+        assertGt(perp.cachedMarkX18(), 0); // mark stayed live; funding simply had no imbalance
         assertEq(perp.cumFundingLongX18(), 0);
         assertEq(perp.cumFundingShortX18(), 0);
+    }
+
+    /// @dev Advance `steps * step` seconds, poking each step so the TWAP
+    /// sample never exceeds MAX_TWAP_WINDOW.
+    function _tick(uint256 steps, uint256 step) internal {
+        for (uint256 i = 0; i < steps; i++) {
+            vm.warp(vm.getBlockTimestamp() + step);
+            perp.pokeMark();
+            perp.updateFunding();
+        }
+    }
+
+    function testStaleMarkIsDroppedNotTrusted() public {
+        _warmMark();
+        uint256 fresh = perp.cachedMarkX18();
+        assertGt(fresh, 0);
+
+        // Nobody touches the pool for a day. The next poke must not install a
+        // day-wide average as the mark.
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        perp.pokeMark();
+        assertEq(perp.cachedMarkX18(), 0);
+        vm.prank(trader);
+        vm.expectRevert(PerpPool.MarkNotReady.selector);
+        perp.openPosition(true, 1_000 ether, 100 ether);
+
+        // One full window later the mark is live again.
+        vm.warp(vm.getBlockTimestamp() + 301);
+        perp.pokeMark();
+        assertGt(perp.cachedMarkX18(), 0);
     }
 
     // ----------------------------------------------------------- liquidation
@@ -328,11 +357,35 @@ contract PerpPoolTest is Test {
         vm.prank(trader);
         perp.openPosition(true, 1_030 ether, 2_500 ether); // ~9.8x
         _movePriceAndRoll(false, 3_000 ether); // massive dump
+
+        uint256 keeperBefore = quote.balanceOf(keeper);
         vm.prank(keeper);
         perp.liquidate(trader, true);
         (uint256 size,,) = _pos(trader, true);
         assertEq(size, 0);
+        // Equity is gone, so a pure cut of it would pay the liquidator
+        // nothing and the position would sit there rotting. The notional
+        // floor keeps the bounty alive.
+        assertGt(quote.balanceOf(keeper) - keeperBefore, 0, "no bounty on a gapped position");
         _invariantHolds(); // vault ate the loss, books still balance
+    }
+
+    function testLiquidationRewardFloorScalesWithNotional() public {
+        _warmMark();
+        vm.prank(trader);
+        perp.openPosition(true, 1_030 ether, 2_500 ether);
+        _movePriceAndRoll(false, 3_000 ether);
+
+        uint256 mark = perp.cachedMarkX18();
+        (uint256 size,,) = _pos(trader, true);
+        uint256 closeNotional = size * mark / 1e18;
+        uint256 floor = closeNotional * perp.LIQ_REWARD_FLOOR_BPS() / 1e4;
+
+        uint256 keeperBefore = quote.balanceOf(keeper);
+        vm.prank(keeper);
+        perp.liquidate(trader, true);
+        assertEq(quote.balanceOf(keeper) - keeperBefore, floor);
+        _invariantHolds();
     }
 
     // ---------------------------------------------------------------- misc
@@ -362,17 +415,27 @@ contract PerpPoolTest is Test {
     }
 
     function testCreatePerpPoolValidation() public {
-        vm.expectRevert(DexRegistry.InvalidQuoteToken.selector);
-        registry.createPerpPool(
-            address(base), address(quote), address(0xbeef), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100)
-        );
-        vm.expectRevert(DexRegistry.UnknownSpotPool.selector);
-        registry.createPerpPool(
-            address(base), address(quote), address(quote), address(0xbeef), FEE_PPM, PerpParams(10, 500, 100, 8000, 100)
-        );
-        vm.expectRevert(DexRegistry.InvalidPerpParams.selector);
-        registry.createPerpPool(
-            address(base), address(quote), address(quote), address(spot), FEE_PPM, PerpParams(51, 500, 100, 8000, 100)
-        );
+        vm.expectRevert(Pair.InvalidQuoteToken.selector);
+        pair.createPerpPool(address(0xbeef), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
+        vm.expectRevert(Pair.UnknownSpotPool.selector);
+        pair.createPerpPool(address(quote), address(0xbeef), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
+        vm.expectRevert(Pair.InvalidPerpParams.selector);
+        pair.createPerpPool(address(quote), address(spot), FEE_PPM + 1, PerpParams(51, 500, 100, 8000, 100));
+
+        // Each bound passes alone, but 50x leaves 200bps of initial margin
+        // against a 2000bps maintenance floor: liquidatable the block it
+        // opens. The cross-check is what rejects it.
+        vm.expectRevert(Pair.InvalidPerpParams.selector);
+        pair.createPerpPool(address(quote), address(spot), FEE_PPM + 1, PerpParams(50, 2000, 100, 8000, 100));
+        // Same leverage with a maintenance floor that actually fits is fine.
+        pair.createPerpPool(address(quote), address(spot), FEE_PPM + 1, PerpParams(50, 100, 50, 8000, 100));
+    }
+
+    function testCreatePerpPoolDuplicateFeeReverts() public {
+        // setUp already created a FEE_PPM perp quoted in `quote`.
+        vm.expectRevert(Pair.DuplicateFeeRate.selector);
+        pair.createPerpPool(address(quote), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
+        // Same fee, opposite quoteToken: distinct market, must succeed.
+        pair.createPerpPool(address(base), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
     }
 }

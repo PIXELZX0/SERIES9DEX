@@ -8,13 +8,14 @@ import {DexRegistry} from "../src/DexRegistry.sol";
 import {ProtocolTreasury} from "../src/ProtocolTreasury.sol";
 import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
+import {Pair} from "../src/Pair.sol";
 import {MockERC20, MockFeeOnTransferERC20} from "./mocks/MockERC20.sol";
-import {MockOrderbook} from "./mocks/MockOrderbook.sol";
+import {MockPair} from "./mocks/MockPair.sol";
 
 contract SpotPoolTest is Test {
     DexRegistry internal registry;
     ProtocolTreasury internal treasury;
-    MockOrderbook internal orderbook;
+    MockPair internal mockPair;
     SpotPool internal pool;
     MockERC20 internal tokenA;
     MockERC20 internal tokenB;
@@ -40,18 +41,20 @@ contract SpotPoolTest is Test {
                 )
             )
         );
-        orderbook = new MockOrderbook();
         SpotPoolFactory factory = new SpotPoolFactory(address(registry));
-        vm.startPrank(owner);
-        registry.setOrderbook(address(orderbook));
+        vm.prank(owner);
         registry.setFactories(address(factory), address(0));
-        vm.stopPrank();
+
+        // Isolate SpotPool's auto-match hook behind a controllable mock,
+        // constructed directly (bypassing the factory/registry) exactly like
+        // DexPositionManager.t.sol's rogue-pool pattern.
+        mockPair = new MockPair();
 
         tokenA = new MockERC20("Token A", "TKA", 18);
         tokenB = new MockERC20("Token B", "TKB", 18);
         (token0, token1) = address(tokenA) < address(tokenB) ? (tokenA, tokenB) : (tokenB, tokenA);
 
-        pool = SpotPool(registry.createSpotPool(address(tokenA), address(tokenB), FEE_PPM, 1e15));
+        pool = new SpotPool(address(registry), address(mockPair), address(treasury), address(token0), address(token1), FEE_PPM);
 
         for (uint256 i = 0; i < 2; i++) {
             MockERC20 t = i == 0 ? token0 : token1;
@@ -173,35 +176,34 @@ contract SpotPoolTest is Test {
         _addLiquidity(alice, 100 ether, 400 ether);
         vm.prank(bob);
         pool.swapExactIn(address(token0), 1 ether, 0, bob);
-        assertEq(orderbook.matchCalls(), 1);
-        assertEq(orderbook.lastPairId(), pool.pairId());
-        assertEq(orderbook.lastMaxFills(), pool.MAX_AUTO_FILLS());
+        assertEq(mockPair.matchCalls(), 1);
+        assertEq(mockPair.lastMaxFills(), pool.MAX_AUTO_FILLS());
     }
 
     function testHookRevertDoesNotRevertSwap() public {
         _addLiquidity(alice, 100 ether, 400 ether);
-        orderbook.setRevertOnMatch(true);
+        mockPair.setRevertOnMatch(true);
         vm.prank(bob);
         uint256 out = pool.swapExactIn(address(token0), 1 ether, 0, bob);
         assertGt(out, 0);
-        assertEq(orderbook.matchCalls(), 0);
+        assertEq(mockPair.matchCalls(), 0);
     }
 
-    function testSwapFromOrderbookOnlyOrderbook() public {
+    function testSwapFromPairOnlyPair() public {
         _addLiquidity(alice, 100 ether, 400 ether);
         vm.prank(bob);
-        vm.expectRevert(SpotPool.OnlyOrderbook.selector);
-        pool.swapFromOrderbook(address(token0), 1 ether, 0, bob);
+        vm.expectRevert(SpotPool.OnlyPair.selector);
+        pool.swapFromPair(address(token0), 1 ether, 0, bob);
     }
 
-    function testSwapFromOrderbookDoesNotRecurse() public {
+    function testSwapFromPairDoesNotRecurse() public {
         _addLiquidity(alice, 100 ether, 400 ether);
-        token0.mint(address(orderbook), 10 ether);
-        vm.startPrank(address(orderbook));
+        token0.mint(address(mockPair), 10 ether);
+        vm.startPrank(address(mockPair));
         token0.approve(address(pool), type(uint256).max);
-        pool.swapFromOrderbook(address(token0), 1 ether, 0, address(orderbook));
+        pool.swapFromPair(address(token0), 1 ether, 0, address(mockPair));
         vm.stopPrank();
-        assertEq(orderbook.matchCalls(), 0);
+        assertEq(mockPair.matchCalls(), 0);
     }
 
     // ------------------------------------------------------------------ fees
@@ -234,7 +236,8 @@ contract SpotPoolTest is Test {
     function testFeeOnTransferSwapCreditsDelta() public {
         MockFeeOnTransferERC20 fot = new MockFeeOnTransferERC20(100); // 1%
         MockERC20 plain = new MockERC20("P", "P", 18);
-        SpotPool fotPool = SpotPool(registry.createSpotPool(address(fot), address(plain), FEE_PPM, 1e15));
+        Pair fotPair = Pair(registry.createPair(address(fot), address(plain)));
+        SpotPool fotPool = SpotPool(fotPair.createSpotPool(FEE_PPM));
 
         fot.mint(alice, 1000 ether);
         plain.mint(alice, 1000 ether);

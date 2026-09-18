@@ -9,7 +9,8 @@ import {SpotPool} from "../src/SpotPool.sol";
 import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPool} from "../src/PerpPool.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
-import {Orderbook} from "../src/Orderbook.sol";
+import {Pair} from "../src/Pair.sol";
+import {IPair} from "../src/interfaces/IPair.sol";
 import {PerpParams} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
@@ -18,12 +19,11 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 contract DexEndToEndTest is Test {
     DexRegistry internal registry;
     ProtocolTreasury internal treasury;
-    Orderbook internal orderbook;
+    Pair internal pair;
     SpotPool internal spot;
     PerpPool internal perp;
     MockERC20 internal base;
     MockERC20 internal quote;
-    bytes32 internal pairId;
 
     address internal owner = makeAddr("owner");
     address internal lpUser = makeAddr("lpUser");
@@ -44,9 +44,7 @@ contract DexEndToEndTest is Test {
                 )
             )
         );
-        orderbook = new Orderbook(address(registry));
         vm.startPrank(owner);
-        registry.setOrderbook(address(orderbook));
         registry.setFactories(
             address(new SpotPoolFactory(address(registry))), address(new PerpPoolFactory(address(registry)))
         );
@@ -64,9 +62,9 @@ contract DexEndToEndTest is Test {
     }
 
     function testFullLifecycle() public {
-        // 1. Anyone creates a spot pool; pair + book come into existence.
-        spot = SpotPool(registry.createSpotPool(address(base), address(quote), 3000, 1e15));
-        pairId = spot.pairId();
+        // 1. Anyone creates the pair, then a spot pool on it.
+        pair = Pair(registry.createPair(address(base), address(quote)));
+        spot = SpotPool(pair.createSpotPool(3000));
 
         // 2. LP seeds the pool at price 4.0.
         vm.startPrank(lpUser);
@@ -77,9 +75,8 @@ contract DexEndToEndTest is Test {
 
         // 3. Maker rests a sell just above market.
         vm.startPrank(maker);
-        base.approve(address(orderbook), type(uint256).max);
-        uint256 orderId =
-            orderbook.placeOrder(pairId, Orderbook.Side.SELL, 4.05e18, 5 ether, uint64(block.timestamp + 7 days), 0);
+        base.approve(address(pair), type(uint256).max);
+        uint256 orderId = pair.placeOrder(IPair.Side.SELL, 4.05e18, 5 ether, uint64(block.timestamp + 7 days), 0);
         vm.stopPrank();
 
         // 4. Taker market-buys; the price crosses 4.05 and the hook fills the
@@ -88,8 +85,8 @@ contract DexEndToEndTest is Test {
         quote.approve(address(spot), type(uint256).max);
         spot.swapExactIn(address(quote), 1_000 ether, 0, taker);
         vm.stopPrank();
-        (,, Orderbook.Status status,,,,,, uint256 escrow,) = orderbook.orders(orderId);
-        assertEq(uint8(status), uint8(Orderbook.Status.FILLED));
+        (,, IPair.Status status,,,,, uint256 escrow,) = pair.orders(orderId);
+        assertEq(uint8(status), uint8(IPair.Status.FILLED));
         assertEq(escrow, 0);
         assertGt(quote.balanceOf(maker), 1_000_000 ether); // sold above entry holdings
 
@@ -99,11 +96,7 @@ contract DexEndToEndTest is Test {
         assertGt(quote.balanceOf(address(treasury)), 0);
 
         // 6. A perp pool goes live against the same pair, LP funds it.
-        perp = PerpPool(
-            registry.createPerpPool(
-                address(base), address(quote), address(quote), address(spot), 3000, PerpParams(10, 500, 100, 8000, 100)
-            )
-        );
+        perp = PerpPool(pair.createPerpPool(address(quote), address(spot), 3000, PerpParams(10, 500, 100, 8000, 100)));
         vm.startPrank(lpUser);
         quote.approve(address(perp), type(uint256).max);
         perp.addLiquidity(100_000 ether, 0, lpUser);
@@ -143,7 +136,7 @@ contract DexEndToEndTest is Test {
         (uint256 r0, uint256 r1,) = spot.getReserves();
         assertGe(base.balanceOf(address(spot)), r0 + spot.protocolFees0());
         assertGe(quote.balanceOf(address(spot)), r1 + spot.protocolFees1());
-        assertEq(base.balanceOf(address(orderbook)), 0);
-        assertEq(quote.balanceOf(address(orderbook)), 0);
+        assertEq(base.balanceOf(address(pair)), 0);
+        assertEq(quote.balanceOf(address(pair)), 0);
     }
 }
