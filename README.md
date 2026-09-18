@@ -36,10 +36,21 @@ Series9 탈중앙화 거래소. ANY/ANY ERC-20 페어에 대한 AMM 현물 풀, 
 
 ```bash
 git clone --recurse-submodules https://github.com/PIXELZX0/SERIES9DEX.git
+foundryup --install v1.8.3   # CI와 같은 버전 (아래 참고)
 forge build
 forge test
-forge snapshot --check   # .gas-snapshot 대조
+forge fmt --check        # CI 차단 조건
+forge snapshot --check   # CI 차단 조건
 ```
+
+**Foundry 버전을 맞춰야 합니다.** CI는 `foundry-toolchain`에 `v1.8.3`을 고정해 두었고
+(`.github/workflows/ci.yml`), `forge fmt --check` 와 `forge snapshot --check` 는 둘 다
+잡을 실패시킵니다. 가스 집계는 forge 버전마다 달라서, **다른 버전으로 `forge snapshot` 을
+다시 만들면 코드가 멀쩡해도 CI가 빨갛게 됩니다.**
+
+컴파일러는 `foundry.toml` 에 `solc_version = "0.8.33"` 으로 고정돼 있습니다. 덕분에
+배포 바이트코드는 누가 어떤 forge 로 빌드하든 동일하며 (v1.5.1 / v1.8.3 에서 배포 대상
+9개 컨트랙트 전부 대조 확인), Sourcify 검증도 재현 가능합니다.
 
 ## 배포
 
