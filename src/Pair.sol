@@ -269,14 +269,23 @@ contract Pair is IPair, ReentrancyGuard {
 
     /// @notice Walk one side of the book outward from `startPrice` (0 starts
     /// at the best price). `cursor` is what to pass as the next call's
-    /// `startPrice`; 0 means the side is exhausted.
+    /// `startPrice`; 0 means the side is exhausted. A `startPrice` that is no
+    /// longer an active level restarts from the best price rather than
+    /// returning nothing.
     function levels(Side side, uint256 startPrice, uint256 count)
         external
         view
         returns (uint256[] memory prices, uint256[] memory totalBase, uint256 cursor)
     {
         mapping(uint256 => Level) storage book = side == Side.BUY ? bidLevels : askLevels;
-        cursor = startPrice == 0 ? (side == Side.BUY ? bestBidPrice : bestAskPrice) : startPrice;
+        uint256 best = side == Side.BUY ? bestBidPrice : bestAskPrice;
+        // A cursor handed back by an earlier call can be gone by the time it is
+        // used again — anyone may match, and a fully filled level is unlinked.
+        // `_unlinkLevel` deletes the level, so its `nextPrice` is gone with it
+        // and there is nothing to resume from; restarting at the best price
+        // repeats a page but never hides depth, where trusting the dead cursor
+        // would return an empty page and read as "side exhausted".
+        cursor = (startPrice == 0 || !book[startPrice].active) ? best : startPrice;
         prices = new uint256[](count);
         totalBase = new uint256[](count);
         uint256 n;
@@ -323,6 +332,13 @@ contract Pair is IPair, ReentrancyGuard {
     }
 
     /// @notice Whether `priceX18` sits on the decimal grid `placeOrder` accepts.
+    ///
+    /// @dev Deliberately not sharing a walk with `tickSizeAt`: folding the two
+    /// together costs this function — which every `placeOrder` runs — the tick
+    /// multiply it has no use for, and it bails on the first off-grid digit
+    /// where a shared version has to keep going. `testGridViewsAgree` is what
+    /// holds the two in lockstep, which is the job a test does better than a
+    /// shared helper does.
     function priceIsValid(uint256 priceX18) public pure returns (bool) {
         if (priceX18 == 0) return false;
         uint256 ceiling = 10 ** MAX_PRICE_SIG_DIGITS;

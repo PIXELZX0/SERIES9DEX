@@ -64,7 +64,8 @@ contract DexRouter {
         if (amountIn == 0) revert InsufficientOutput();
 
         address token = tokenIn;
-        uint256 amount = _pull(tokenIn, amountIn);
+        uint256 pulled = _pull(tokenIn, amountIn);
+        uint256 amount = pulled;
 
         for (uint256 i = 0; i < pools.length; i++) {
             address pool = pools[i];
@@ -83,7 +84,10 @@ contract DexRouter {
         amountOut = amount;
         if (amountOut < minAmountOut) revert InsufficientOutput();
         IERC20(token).safeTransfer(to, amountOut);
-        emit Swapped(msg.sender, to, tokenIn, amountIn, amountOut);
+        // `pulled`, not `amountIn`: a fee-on-transfer token delivers less than
+        // was requested, and the smaller figure is what the router actually
+        // moved.
+        emit Swapped(msg.sender, to, tokenIn, pulled, amountOut);
     }
 
     // --------------------------------------------------------------- quotes
