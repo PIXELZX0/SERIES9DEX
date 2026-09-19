@@ -41,6 +41,10 @@ jobs:
       RPC_URL: ${{ inputs.network == 'testnet' && secrets.MONAD_TESTNET_RPC_URL || secrets.MONAD_RPC_URL }}
       PRIVATE_KEY: ${{ inputs.network == 'testnet' && secrets.TESTNET_PRIVATE_KEY || secrets.PRIVATE_KEY }}
       SAFE_ADDRESS: ${{ inputs.network == 'testnet' && secrets.TESTNET_SAFE_ADDRESS || secrets.SAFE_ADDRESS }}
+      # Optional. The guardian may pause the system and nothing else, so it is
+      # not a secret — it ends up on-chain either way. Unset leaves the Safe as
+      # the sole pauser, which still works, just slower in an incident.
+      GUARDIAN_ADDRESS: ${{ inputs.network == 'testnet' && vars.TESTNET_GUARDIAN_ADDRESS || vars.GUARDIAN_ADDRESS }}
       SKIP_VERIFY: ${{ inputs.skip_verify || vars.SKIP_VERIFY || 'false' }}
 
     steps:
@@ -102,6 +106,25 @@ jobs:
           fi
 
           lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+          if [[ -n "${GUARDIAN_ADDRESS:-}" ]]; then
+            # A malformed guardian is worse than none: it silently deploys a
+            # system whose only pauser is a key nobody holds.
+            if [[ ! "$GUARDIAN_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+              echo "GUARDIAN_ADDRESS is not a 20-byte hex address: ${GUARDIAN_ADDRESS}" >&2
+              exit 1
+            fi
+            if [[ "$(lc "$GUARDIAN_ADDRESS")" == "$(lc "$DEPLOYER")" ]]; then
+              echo "GUARDIAN_ADDRESS must differ from the deployer: the deploy key is hot." >&2
+              exit 1
+            fi
+            if [[ "$(lc "$GUARDIAN_ADDRESS")" == "$(lc "$SAFE_ADDRESS")" ]]; then
+              echo "::warning title=Guardian is the Safe::The fast pause path is the Safe itself, so there is no fast path."
+            fi
+            echo "Guardian (pause-only): ${GUARDIAN_ADDRESS}"
+          else
+            echo "::warning title=No guardian::Only the Safe can pause. Set GUARDIAN_ADDRESS (repo variable) for a fast path."
+          fi
+
           if [[ "$(lc "$DEPLOYER")" == "$(lc "$SAFE_ADDRESS")" ]]; then
             echo "SAFE_ADDRESS must differ from the deployer." >&2
             exit 1
@@ -298,6 +321,7 @@ jobs:
             echo ""
             echo "- Ref: \`${GITHUB_REF_NAME}\`"
             echo "- Safe owner: \`${SAFE_ADDRESS}\`"
+            echo "- Guardian (pause-only): \`${GUARDIAN_ADDRESS:-none}\`"
             echo ""
             echo "| Contract | Address |"
             echo "|---|---|"
