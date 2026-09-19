@@ -93,7 +93,20 @@ forge script script/DeployDex.s.sol:DeployDex \
 | `testnet` | 10143 | `MONAD_TESTNET_RPC_URL`, `TESTNET_PRIVATE_KEY`, `TESTNET_SAFE_ADDRESS` |
 | `mainnet` | 143 | `MONAD_RPC_URL`, `PRIVATE_KEY`, `SAFE_ADDRESS` |
 
-선택 GitHub Variables: `SKIP_VERIFY` (`true`/`false`, 기본 `false`) — 실행 시 입력으로도 덮어쓸 수 있습니다.
+선택 GitHub Variables:
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `SKIP_VERIFY` | `false` | Sourcify 검증 생략. 실행 시 입력으로도 덮어쓸 수 있습니다 |
+| `GUARDIAN_ADDRESS` | 없음 | mainnet guardian — **정지만** 가능한 빠른 키 |
+| `TESTNET_GUARDIAN_ADDRESS` | 없음 | testnet guardian |
+
+guardian 은 온체인에 공개되는 값이라 secret 이 아니라 **variable** 입니다. 비워두면 Safe 만
+정지할 수 있고(동작은 정상, 비상시 서명 모으는 시간이 걸림), 배포 잡이 경고를 남깁니다.
+배포 후 Safe 가 `setGuardian` 으로 추가·교체할 수 있습니다.
+
+프리플라이트에서 걸러지는 것: 형식이 20바이트 hex 가 아니거나 배포자 키와 같으면 **실패**
+(배포 키는 CI 에서 쓰이는 hot key). Safe 주소와 같으면 경고 — 빠른 경로가 없다는 뜻이므로.
 
 잡은 `network` 이름의 GitHub Environment에서 실행됩니다. **레포 설정에서 `mainnet` 환경에
 required reviewer를 걸어두면 실제 배포가 수동 승인 뒤에만 나갑니다.**
