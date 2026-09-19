@@ -16,7 +16,16 @@ Series9 탈중앙화 거래소. ANY/ANY ERC-20 페어에 대한 AMM 현물 풀, 
 | `PerpPoolFactory` | [`src/PerpPoolFactory.sol`](src/PerpPoolFactory.sol) | 선물 풀 배포 |
 | `DexPositionManager` | [`src/DexPositionManager.sol`](src/DexPositionManager.sol) | LP 지분을 ERC-721 포지션으로 래핑 |
 | `DexRouter` | [`src/DexRouter.sol`](src/DexRouter.sol) | 멀티홉 스왑 + deadline (주변부, 무상태) |
-| `ProtocolTreasury` | [`src/ProtocolTreasury.sol`](src/ProtocolTreasury.sol) | 프로토콜 수수료 수취 (UUPS) |
+| `ProtocolTreasury` | [`src/ProtocolTreasury.sol`](src/ProtocolTreasury.sol) | 프로토콜 수수료 수취 (UUPS, 타임락 소유) |
+
+### 금고 인출
+
+`ProtocolTreasury` 의 owner 는 Safe 가 아니라 **`TimelockController`** 입니다. Safe 가 인출을 큐에
+올리고 48시간 뒤 **누구나** 실행할 수 있습니다(검열 불가). guardian 은 그 사이 **취소**할 수 있어,
+키가 털려도 즉시 전액이 나가지 않습니다. 금고 업그레이드도 같은 지연을 거칩니다.
+
+수수료는 급히 뺄 이유가 없으므로 지연 비용이 사실상 0인 반면, 정지는 즉시여야 하므로
+`DexRegistry` 의 owner 는 Safe 로 남습니다. 근거는 [`docs/DEX.md` §10](docs/DEX.md).
 
 ### 비상 정지
 
@@ -98,7 +107,8 @@ forge script script/DeployDex.s.sol:DeployDex \
 | 변수 | 기본 | 설명 |
 |---|---|---|
 | `SKIP_VERIFY` | `false` | Sourcify 검증 생략. 실행 시 입력으로도 덮어쓸 수 있습니다 |
-| `GUARDIAN_ADDRESS` | 없음 | mainnet guardian — **정지만** 가능한 빠른 키 |
+| `GUARDIAN_ADDRESS` | 없음 | mainnet guardian — **정지만** 가능한 빠른 키. 금고 타임락의 canceller 도 겸함 |
+| `TREASURY_TIMELOCK_DELAY` | `172800` (48h) | 금고 인출 지연(초). 배포 후에는 타임락 스스로 변경 |
 | `TESTNET_GUARDIAN_ADDRESS` | 없음 | testnet guardian |
 
 guardian 은 온체인에 공개되는 값이라 secret 이 아니라 **variable** 입니다. 비워두면 Safe 만

@@ -3,6 +3,7 @@ pragma solidity ^0.8.22;
 
 import {Script, console} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {TimelockController} from "openzeppelin-contracts/contracts/governance/TimelockController.sol";
 
 import {ProtocolTreasury} from "../src/ProtocolTreasury.sol";
 import {DexRegistry} from "../src/DexRegistry.sol";
@@ -34,6 +35,11 @@ contract DeployDex is Script {
         // Optional. The guardian can pause and nothing else; leaving it unset
         // means only the Safe can, which is slower in an incident.
         address guardian = vm.envOr("GUARDIAN_ADDRESS", address(0));
+        // Fee withdrawals are never urgent, so a delay in front of them costs
+        // almost nothing and turns a key compromise from an instant drain into
+        // something observable and cancellable. The timelock can change this
+        // later, through itself.
+        uint256 timelockDelay = vm.envOr("TREASURY_TIMELOCK_DELAY", uint256(48 hours));
         address deployer = vm.addr(deployerPrivateKey);
 
         require(safeAddress != address(0), "SAFE_ADDRESS required");
@@ -45,12 +51,33 @@ contract DeployDex is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // --- Treasury (Safe-owned from day one) ---
+        // --- Treasury timelock ---
+        // Proposer is the Safe. Execution is open (`address(0)` in executors),
+        // so once the delay has run anyone can push the transaction through and
+        // the Safe cannot be censored out of its own funds.
+        //
+        // The guardian is added as a canceller: a compromised Safe can queue a
+        // drain, but the fast key that already exists to pause the system can
+        // kill it before the delay expires. Role changes are themselves subject
+        // to the delay, because the timelock is left self-administered, so that
+        // canceller cannot be stripped faster than it can act.
+        address[] memory proposers = new address[](1);
+        proposers[0] = safeAddress;
+        address[] memory executors = new address[](1);
+        executors[0] = address(0);
+        TimelockController treasuryTimelock = new TimelockController(timelockDelay, proposers, executors, deployer);
+        if (guardian != address(0)) {
+            treasuryTimelock.grantRole(treasuryTimelock.CANCELLER_ROLE(), guardian);
+        }
+        treasuryTimelock.renounceRole(treasuryTimelock.DEFAULT_ADMIN_ROLE(), deployer);
+
+        // --- Treasury (owned by the timelock, never by the Safe directly) ---
         ProtocolTreasury treasuryImplementation = new ProtocolTreasury();
         ProtocolTreasury treasury = ProtocolTreasury(
             address(
                 new ERC1967Proxy(
-                    address(treasuryImplementation), abi.encodeCall(ProtocolTreasury.initialize, (safeAddress))
+                    address(treasuryImplementation),
+                    abi.encodeCall(ProtocolTreasury.initialize, (address(treasuryTimelock)))
                 )
             )
         );
@@ -83,6 +110,8 @@ contract DeployDex is Script {
         console.log("\n=== Deployed Addresses ===");
         console.log("ProtocolTreasury Implementation:", address(treasuryImplementation));
         console.log("ProtocolTreasury Proxy:", address(treasury));
+        console.log("Treasury Timelock:", address(treasuryTimelock));
+        console.log("  delay (seconds):", timelockDelay);
         console.log("DexRegistry Implementation:", address(registryImplementation));
         console.log("DexRegistry Proxy:", address(registry));
         console.log("SpotPoolFactory:", address(spotPoolFactory));
@@ -97,6 +126,7 @@ contract DeployDex is Script {
             deployer,
             safeAddress,
             guardian,
+            address(treasuryTimelock),
             address(treasuryImplementation),
             address(treasury),
             address(registryImplementation),
@@ -112,6 +142,7 @@ contract DeployDex is Script {
         address deployer,
         address safeAddress,
         address guardian,
+        address treasuryTimelock,
         address treasuryImplementation,
         address treasury,
         address registryImplementation,
@@ -126,6 +157,7 @@ contract DeployDex is Script {
         vm.serializeAddress(obj, "deployer", deployer);
         vm.serializeAddress(obj, "safeOwner", safeAddress);
         vm.serializeAddress(obj, "guardian", guardian);
+        vm.serializeAddress(obj, "treasuryTimelock", treasuryTimelock);
         vm.serializeAddress(obj, "protocolTreasuryImpl", treasuryImplementation);
         vm.serializeAddress(obj, "protocolTreasuryProxy", treasury);
         vm.serializeAddress(obj, "dexRegistryImpl", registryImplementation);

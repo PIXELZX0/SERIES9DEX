@@ -21,6 +21,7 @@ PERP_FACTORY="$(get perpPoolFactory)"
 POSITION_MANAGER="$(get dexPositionManager)"
 ROUTER="$(get dexRouter)"
 GUARDIAN="$(get guardian)"
+TIMELOCK="$(get treasuryTimelock)"
 
 fail=0
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
@@ -35,7 +36,9 @@ check() { # label expected actual
 call() { cast call "$1" "$2" --rpc-url "$RPC_URL"; }
 
 check "registry.owner()"           "$SAFE_ADDRESS" "$(call "$REGISTRY" 'owner()(address)')"
-check "treasury.owner()"           "$SAFE_ADDRESS" "$(call "$TREASURY" 'owner()(address)')"
+# The treasury is owned by the timelock, never by the Safe directly: a key
+# compromise should be an observable, cancellable proposal, not an instant drain.
+check "treasury.owner()"           "$TIMELOCK"     "$(call "$TREASURY" 'owner()(address)')"
 check "registry.treasury()"        "$TREASURY"     "$(call "$REGISTRY" 'treasury()(address)')"
 check "registry.spotPoolFactory()" "$SPOT_FACTORY" "$(call "$REGISTRY" 'spotPoolFactory()(address)')"
 check "registry.perpPoolFactory()" "$PERP_FACTORY" "$(call "$REGISTRY" 'perpPoolFactory()(address)')"
@@ -45,5 +48,18 @@ check "positionManager.registry()" "$REGISTRY"     "$(call "$POSITION_MANAGER" '
 check "router.registry()"          "$REGISTRY"     "$(call "$ROUTER" 'registry()(address)')"
 check "registry.guardian()"        "$GUARDIAN"     "$(call "$REGISTRY" 'guardian()(address)')"
 check "registry.paused()"          "false"         "$(call "$REGISTRY" 'paused()(bool)')"
+
+# Nobody may hold the timelock's admin role but the timelock itself, or the
+# delay can be rewritten without waiting for it.
+ADMIN_ROLE=0x0000000000000000000000000000000000000000000000000000000000000000
+has_role() { cast call "$TIMELOCK" 'hasRole(bytes32,address)(bool)' "$1" "$2" --rpc-url "$RPC_URL"; }
+check "timelock self-admin"        "true"          "$(has_role "$ADMIN_ROLE" "$TIMELOCK")"
+check "safe is not timelock admin" "false"         "$(has_role "$ADMIN_ROLE" "$SAFE_ADDRESS")"
+PROPOSER_ROLE="$(cast keccak 'PROPOSER_ROLE')"
+check "safe proposes"              "true"          "$(has_role "$PROPOSER_ROLE" "$SAFE_ADDRESS")"
+if [[ "$GUARDIAN" != "0x0000000000000000000000000000000000000000" ]]; then
+  CANCELLER_ROLE="$(cast keccak 'CANCELLER_ROLE')"
+  check "guardian cancels"         "true"          "$(has_role "$CANCELLER_ROLE" "$GUARDIAN")"
+fi
 
 exit $fail
