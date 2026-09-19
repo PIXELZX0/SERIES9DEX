@@ -45,6 +45,9 @@ jobs:
       # not a secret — it ends up on-chain either way. Unset leaves the Safe as
       # the sole pauser, which still works, just slower in an incident.
       GUARDIAN_ADDRESS: ${{ inputs.network == 'testnet' && vars.TESTNET_GUARDIAN_ADDRESS || vars.GUARDIAN_ADDRESS }}
+      # Seconds. Unset uses the script's 48h default; the timelock can change
+      # it later, through itself.
+      TREASURY_TIMELOCK_DELAY: ${{ vars.TREASURY_TIMELOCK_DELAY }}
       SKIP_VERIFY: ${{ inputs.skip_verify || vars.SKIP_VERIFY || 'false' }}
 
     steps:
@@ -170,7 +173,7 @@ jobs:
           set -euo pipefail
           ABI_DIR="release-abis-${SLUG}"
           mkdir -p "$ABI_DIR"
-          for name in DexRegistry ProtocolTreasury Pair SpotPool SpotPoolFactory PerpPool PerpPoolFactory DexPositionManager DexRouter; do
+          for name in DexRegistry ProtocolTreasury Pair SpotPool SpotPoolFactory PerpPool PerpPoolFactory DexPositionManager DexRouter TimelockController; do
             jq '.abi' "out/${name}.sol/${name}.json" > "$ABI_DIR/${name}.abi.json"
           done
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
@@ -321,7 +324,7 @@ jobs:
             echo ""
             echo "- Ref: \`${GITHUB_REF_NAME}\`"
             echo "- Safe owner: \`${SAFE_ADDRESS}\`"
-            echo "- Guardian (pause-only): \`${GUARDIAN_ADDRESS:-none}\`"
+            echo "- Guardian (pause-only, timelock canceller): \`${GUARDIAN_ADDRESS:-none}\`"
             echo ""
             echo "| Contract | Address |"
             echo "|---|---|"
