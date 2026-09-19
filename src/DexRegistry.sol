@@ -10,10 +10,13 @@ import {Pair} from "./Pair.sol";
 
 /// @notice Entry point for pair registration (DEX.md §3). Pairs are ANY/ANY
 /// ERC-20, one `Pair` contract per token pair, CREATE2-deployed here so its
-/// address is predictable off-chain from the two token addresses and the
-/// chosen tick size. The Pair itself owns pool creation, its orderbook, and
-/// its tickSize — this registry only tracks which Pair/pool addresses are
-/// legitimate. UUPS-upgradeable; deployed Pairs and pools stay immutable.
+/// address is predictable off-chain from the two token addresses alone
+/// (`predictPairAddress`). The Pair itself owns pool creation and its
+/// orderbook, and carries no per-pair parameter — order prices sit on a
+/// decimal grid derived from the price. This registry only tracks which
+/// Pair/pool addresses are legitimate, and holds the emergency stop every
+/// pool and pair reads. UUPS-upgradeable; deployed Pairs and pools stay
+/// immutable.
 contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     address public treasury;
     address public spotPoolFactory;

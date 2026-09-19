@@ -61,8 +61,11 @@ foundryup --install v1.8.3   # CI와 같은 버전 (아래 참고)
 forge build
 forge test
 forge fmt --check        # CI 차단 조건
-forge snapshot --check   # CI 차단 조건
+forge snapshot --check --tolerance 1   # CI 차단 조건
 ```
+
+`--tolerance 1` 은 퍼즈 시드가 고정돼 있지 않아 퍼즈 테스트 평균 가스가 매 실행 조금씩
+달라지기 때문입니다. 실제 가스 회귀는 이 범위보다 훨씬 큽니다.
 
 **Foundry 버전을 맞춰야 합니다.** CI는 `foundry-toolchain`에 `v1.8.3`을 고정해 두었고
 (`.github/workflows/ci.yml`), `forge fmt --check` 와 `forge snapshot --check` 는 둘 다
