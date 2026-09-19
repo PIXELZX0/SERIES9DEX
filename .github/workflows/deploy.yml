@@ -137,9 +137,18 @@ jobs:
           # at that address, the protocol is owned by nobody.
           SAFE_CODE="$(cast code "$SAFE_ADDRESS" --rpc-url "$RPC_URL")"
           if [[ "$SAFE_CODE" == "0x" || -z "$SAFE_CODE" ]]; then
-            echo "No contract deployed at SAFE_ADDRESS ${SAFE_ADDRESS} on ${NETWORK}." >&2
-            echo "Deploy the Safe first: ownership transfer is irreversible." >&2
-            exit 1
+            # Mainnet: a single key that can upgrade the registry and repoint
+            # the factories is not an owner, and the transfer is irreversible.
+            if [[ "$NETWORK" == "mainnet" ]]; then
+              echo "No contract deployed at SAFE_ADDRESS ${SAFE_ADDRESS} on ${NETWORK}." >&2
+              echo "Deploy the Safe first: ownership transfer is irreversible." >&2
+              exit 1
+            fi
+            # Testnet exists to rehearse the wiring, verification and assertion
+            # path, not the governance setup, and nothing there is worth
+            # protecting. Standing up a Safe just to clear this check costs more
+            # than it buys.
+            echo "::warning title=Owner is an EOA::${SAFE_ADDRESS} has no code. Allowed on ${NETWORK}; mainnet still requires a contract."
           fi
 
           # Code exists, but is it a multisig? A wrong-but-valid contract address
