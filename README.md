@@ -17,6 +17,15 @@ Series9 탈중앙화 거래소. ANY/ANY ERC-20 페어에 대한 AMM 현물 풀, 
 | `DexPositionManager` | [`src/DexPositionManager.sol`](src/DexPositionManager.sol) | LP 지분을 ERC-721 포지션으로 래핑 |
 | `DexRouter` | [`src/DexRouter.sol`](src/DexRouter.sol) | 멀티홉 스왑 + deadline (주변부, 무상태) |
 | `ProtocolTreasury` | [`src/ProtocolTreasury.sol`](src/ProtocolTreasury.sol) | 프로토콜 수수료 수취 (UUPS, 타임락 소유) |
+| `PriceBalancer` | [`src/PriceBalancer.sol`](src/PriceBalancer.sol) | SERIES9·Uniswap·PancakeSwap 간 가격 맞추기 (별도 배포) |
+
+### 가격 밸런서
+
+`PriceBalancer` 는 같은 페어가 SERIES9, Uniswap V2/V3, PancakeSwap V2/V3 에 흩어져 있을 때
+싼 곳에서 사서 비싼 곳에 파는 왕복 거래로 가격을 수수료 대역 안으로 붙여 놓습니다.
+Safe 가 등록한 풀만 쓰고, 키퍼 키는 리밸런스만 할 수 있으며, 매 거래는 재고가 줄면
+되돌아갑니다. DEX 스택과 별개로 `script/DeployBalancer.s.sol` 로 배포하고
+`script/keeper.sh` 로 주기 실행합니다. 자세한 내용은 [`docs/BALANCER.md`](docs/BALANCER.md).
 
 ### 금고 인출
 
