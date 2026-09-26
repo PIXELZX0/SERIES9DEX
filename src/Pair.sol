@@ -717,9 +717,16 @@ contract Pair is IPair, ReentrancyGuard {
     /// capacity before its average post-fee SELL price would fall to `price`.
     /// Selling dx base into (Rb, Rq) at fee multiplier g nets
     /// `Rq·g·dx / (Rb·PPM + g·dx)`; setting the average `out/dx` equal to the
-    /// limit and solving for dx gives the `dxMax` below, and the same
-    /// rearrangement with dx = 0 gives the crossability test. Returns the
-    /// winner's fee and reserves so the caller need not re-read them.
+    /// limit and solving for dx gives `dxMax = Rq·1e18/price − Rb·PPM/g`, and
+    /// dxMax > 0 is the crossability test. Returns the winner's fee and
+    /// reserves so the caller need not re-read them.
+    ///
+    /// Each term goes through `mulDiv` rather than cross-multiplying: the
+    /// price is maker-chosen and unbounded, and a plain `price * Rb * PPM`
+    /// lets a 1-wei ask at 1e70 overflow here and revert every `_match` for
+    /// as long as it is the best ask. Flooring the first term and ceiling the
+    /// second keeps `dxMax` at or below the exact value, which the caller's
+    /// `minOut` check already tolerates.
     function _bestSellPool(uint256 price)
         internal
         view
@@ -730,10 +737,10 @@ contract Pair is IPair, ReentrancyGuard {
             address p = spotPools[i];
             (uint256 g, uint256 reserveBase, uint256 reserveQuote) = _poolFeeAndReserves(p);
             if (reserveBase == 0 || reserveQuote == 0) continue;
-            uint256 lhs = g * reserveQuote * 1e18;
-            uint256 rhs = price * reserveBase * PPM;
-            if (lhs <= rhs) continue;
-            uint256 dxMax = (lhs - rhs) / (price * g);
+            uint256 room = Math.mulDiv(reserveQuote, 1e18, price);
+            uint256 used = Math.mulDiv(reserveBase, PPM, g, Math.Rounding.Ceil);
+            if (room <= used) continue;
+            uint256 dxMax = room - used;
             if (dxMax > bestDxMax) {
                 bestDxMax = dxMax;
                 bestPool = p;
@@ -744,7 +751,8 @@ contract Pair is IPair, ReentrancyGuard {
         }
     }
 
-    /// @dev Same idea as `_bestSellPool` for the BUY side.
+    /// @dev Same idea as `_bestSellPool` for the BUY side:
+    /// `dqMax = Rb·price/1e18 − Rq·PPM/g`, rounded down the same way.
     function _bestBuyPool(uint256 price)
         internal
         view
@@ -755,10 +763,10 @@ contract Pair is IPair, ReentrancyGuard {
             address p = spotPools[i];
             (uint256 g, uint256 reserveBase, uint256 reserveQuote) = _poolFeeAndReserves(p);
             if (reserveBase == 0 || reserveQuote == 0) continue;
-            uint256 lhs = g * reserveBase * price;
-            uint256 rhs = reserveQuote * PPM * 1e18;
-            if (lhs <= rhs) continue;
-            uint256 dqMax = (lhs - rhs) / (g * 1e18);
+            uint256 room = Math.mulDiv(reserveBase, price, 1e18);
+            uint256 used = Math.mulDiv(reserveQuote, PPM, g, Math.Rounding.Ceil);
+            if (room <= used) continue;
+            uint256 dqMax = room - used;
             if (dqMax > bestDqMax) {
                 bestDqMax = dqMax;
                 bestPool = p;
