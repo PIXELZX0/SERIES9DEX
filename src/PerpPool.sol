@@ -247,6 +247,11 @@ contract PerpPool is ReentrancyGuard {
         if (to == address(0)) revert ZeroAddress();
         pokeMark();
         updateFunding();
+        // Same guard as `removeLiquidity`: with no mark, `lpEquity` drops the
+        // traders' unrealized PnL and prices shares off `totalLiquidity`
+        // alone, so a deposit after a stale-window reset would mint against
+        // the wrong equity and move value between old and new LPs.
+        if ((longSizeBase > 0 || shortSizeBase > 0) && cachedMarkX18 == 0) revert MarkNotReady();
         uint256 credited = _pull(quoteIn);
         uint256 supply = totalShares;
         if (supply == 0) {

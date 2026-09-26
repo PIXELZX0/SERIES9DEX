@@ -96,10 +96,10 @@ contract DexRegistry is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     // --------------------------------------------------------- pair creation
 
-    /// @notice Deploys the Pair itself — no tick, no pool. Tick is fixed
-    /// later, by whoever creates the pair's first spot pool (`Pair.
-    /// createSpotPool`), so this call carries no creator-chosen value an
-    /// attacker could front-run for and lock in for free.
+    /// @notice Deploys the Pair itself — no pool, and no per-pair parameter:
+    /// order prices sit on a decimal grid derived from the price, so this
+    /// call carries no creator-chosen value an attacker could front-run for
+    /// and lock in for free.
     function createPair(address tokenX, address tokenY) external returns (address pair) {
         (address token0, address token1) = PairKey.sort(tokenX, tokenY);
         bytes32 key = PairKey.pairId(token0, token1);

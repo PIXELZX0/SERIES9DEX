@@ -462,4 +462,33 @@ contract PerpPoolTest is Test {
         // Same fee, opposite quoteToken: distinct market, must succeed.
         pair.createPerpPool(address(base), address(spot), FEE_PPM, PerpParams(10, 500, 100, 8000, 100));
     }
+
+    function testAddLiquidityRevertsWhileMarkResetWithOpenInterest() public {
+        _warmMark();
+        vm.prank(trader);
+        perp.openPosition(true, 10_000 ether, 20_000 ether);
+        // Trader deep in loss: real LP equity sits well above totalLiquidity.
+        _movePriceAndRoll(false, 2_000 ether);
+
+        // A quiet hour drops the mark. Without it lpEquity forgets the
+        // unrealized PnL, so minting now would price shares off
+        // totalLiquidity alone and hand the late LP part of the old LPs' gain.
+        vm.warp(vm.getBlockTimestamp() + perp.MAX_TWAP_WINDOW() + 1);
+        vm.prank(lp);
+        vm.expectRevert(PerpPool.MarkNotReady.selector);
+        perp.addLiquidity(100_000 ether, 0, lp);
+
+        // Once a fresh window completes, deposits open again at a fair price.
+        perp.pokeMark();
+        vm.warp(vm.getBlockTimestamp() + perp.MIN_TWAP_WINDOW());
+        uint256 supply = perp.totalShares();
+        uint256 liquidity = perp.totalLiquidity();
+        vm.prank(lp);
+        uint256 shares = perp.addLiquidity(100_000 ether, 0, lp);
+        assertGt(perp.cachedMarkX18(), 0);
+        // Fewer shares than a totalLiquidity-only price would have minted,
+        // and they are worth what was deposited.
+        assertLt(shares, 100_000 ether * supply / liquidity);
+        assertApproxEqRel(shares * perp.lpEquity() / perp.totalShares(), 100_000 ether, 1e12);
+    }
 }

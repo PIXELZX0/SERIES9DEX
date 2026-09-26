@@ -486,4 +486,25 @@ contract PairTest is Test {
         assertEq(prices.length, 0);
         assertEq(cursor, 0);
     }
+
+    function testAstronomicalAskDoesNotFreezeMatching() public {
+        // 1 wei of base at a one-digit price is on the grid and clears the
+        // notional floor. As the only ask it is the best ask, and pool sizing
+        // used to cross-multiply it straight into an overflow, reverting
+        // every match — bids included — for as long as it stood.
+        address griefer = makeAddr("griefer");
+        base.mint(griefer, 1);
+        vm.startPrank(griefer);
+        base.approve(address(pair), 1);
+        uint256 askId = pair.placeOrder(IPair.Side.SELL, 1e70, 1, uint64(block.timestamp + 365 days), 0);
+        vm.stopPrank();
+
+        uint256 bidId = _placeBuy(5e18, 1 ether); // pool sits at 4.0
+        pair.matchOrders(10);
+
+        (IPair.Status bidStatus,,) = _order(bidId);
+        (IPair.Status askStatus,,) = _order(askId);
+        assertEq(uint8(bidStatus), uint8(IPair.Status.FILLED));
+        assertEq(uint8(askStatus), uint8(IPair.Status.OPEN));
+    }
 }
