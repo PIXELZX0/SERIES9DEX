@@ -89,9 +89,9 @@ contract PairBookMatchTest is Test {
         uint256 buyerBaseBefore = base.balanceOf(buyer);
 
         vm.prank(seller);
-        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e18, 100 ether, expiry, 0);
+        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e36, 100 ether, expiry, 0);
         vm.prank(buyer);
-        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e18, 100 ether, expiry, 0);
+        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e36, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
         assertEq(_filled(buyId), 100 ether);
@@ -114,16 +114,17 @@ contract PairBookMatchTest is Test {
         console.log("seller avg (milli):", sellerAvg / 1e15);
     }
 
-    /// Same fill, opposite arrival order: the midpoint does not move.
+    /// Same fill, opposite arrival order: the midpoint does not move. No pool
+    /// here — with one, a bid that arrives first takes the pool up to its
+    /// own limit as it is placed, before any ask exists to meet it.
     function testArrivalOrderDoesNotMoveThePrice() public {
-        _seed(10 ether, 40 ether);
         uint256 buyerQuoteBefore = quote.balanceOf(buyer);
         uint256 sellerQuoteBefore = quote.balanceOf(seller);
 
         vm.prank(buyer);
-        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e18, 100 ether, expiry, 0);
+        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e36, 100 ether, expiry, 0);
         vm.prank(seller);
-        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e18, 100 ether, expiry, 0);
+        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e36, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
         assertEq(_filled(buyId), 100 ether);
@@ -146,9 +147,9 @@ contract PairBookMatchTest is Test {
 
         uint256 buyerQuoteBefore = quote.balanceOf(buyer);
         vm.prank(seller);
-        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e18, 100 ether, expiry, 0);
+        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e36, 100 ether, expiry, 0);
         vm.prank(buyer);
-        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e18, 100 ether, expiry, 0);
+        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e36, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
         assertEq(_filled(buyId), 100 ether);
@@ -164,9 +165,9 @@ contract PairBookMatchTest is Test {
     /// could not do before.
     function testCrossedPairFillsWithNoPoolLiquidity() public {
         vm.prank(seller);
-        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e18, 100 ether, expiry, 0);
+        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e36, 100 ether, expiry, 0);
         vm.prank(buyer);
-        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e18, 100 ether, expiry, 0);
+        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e36, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
         assertEq(_filled(sellId), 100 ether);
@@ -177,9 +178,9 @@ contract PairBookMatchTest is Test {
     /// and its escrow.
     function testPartialCrossLeavesRemainder() public {
         vm.prank(seller);
-        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e18, 30 ether, expiry, 0);
+        uint256 sellId = pair.placeOrder(IPair.Side.SELL, 4.5e36, 30 ether, expiry, 0);
         vm.prank(buyer);
-        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e18, 100 ether, expiry, 0);
+        uint256 buyId = pair.placeOrder(IPair.Side.BUY, 5e36, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
         assertEq(_filled(sellId), 30 ether);
@@ -198,9 +199,9 @@ contract PairBookMatchTest is Test {
     /// Escrow solvency must hold across a direct fill.
     function testEscrowSolvencyAfterDirectFill() public {
         vm.prank(seller);
-        pair.placeOrder(IPair.Side.SELL, 4.5e18, 30 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.SELL, 4.5e36, 30 ether, expiry, 0);
         vm.prank(buyer);
-        pair.placeOrder(IPair.Side.BUY, 5e18, 100 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.BUY, 5e36, 100 ether, expiry, 0);
         pair.matchOrders(50);
 
         uint256 sumBase;
@@ -226,35 +227,35 @@ contract PairBookMatchTest is Test {
         // No pool, so the crossed book has to clear itself and the levels the
         // bid reaches are genuinely consumed rather than undercut by the AMM.
         vm.startPrank(seller);
-        pair.placeOrder(IPair.Side.SELL, 4.1e18, 1 ether, expiry, 0);
-        pair.placeOrder(IPair.Side.SELL, 4.2e18, 2 ether, expiry, 0);
-        pair.placeOrder(IPair.Side.SELL, 4.3e18, 3 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.SELL, 4.1e36, 1 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.SELL, 4.2e36, 2 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.SELL, 4.3e36, 3 ether, expiry, 0);
         vm.stopPrank();
 
         (uint256[] memory prices,, uint256 cursor) = pair.levels(IPair.Side.SELL, 0, 1);
-        assertEq(prices[0], 4.1e18);
-        assertEq(cursor, 4.2e18);
+        assertEq(prices[0], 4.1e36);
+        assertEq(cursor, 4.2e36);
 
         // The level the cursor points at is filled and unlinked before the
         // front end comes back for page two. A 4.25 bid crosses 4.1 and 4.2 but
         // not 4.3.
         vm.prank(buyer);
-        pair.placeOrder(IPair.Side.BUY, 4.25e18, 3 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.BUY, 4.25e36, 3 ether, expiry, 0);
         pair.matchOrders(20);
-        (bool stillActive,,) = pair.levelOf(IPair.Side.SELL, 4.2e18);
+        (bool stillActive,,) = pair.levelOf(IPair.Side.SELL, 4.2e36);
         assertFalse(stillActive, "4.2 level must be gone for this to test anything");
 
         // The remaining 4.3 depth is still reported rather than lost.
-        (prices,, cursor) = pair.levels(IPair.Side.SELL, 4.2e18, 10);
+        (prices,, cursor) = pair.levels(IPair.Side.SELL, 4.2e36, 10);
         assertGt(prices.length, 0, "dead cursor must not read as an empty book");
-        assertEq(prices[prices.length - 1], 4.3e18);
+        assertEq(prices[prices.length - 1], 4.3e36);
         assertEq(cursor, 0); // genuinely exhausted now
     }
 
     function testGridViewsAgree() public view {
         // The tick reported at a magnitude must be exactly the step that stays
         // on the grid, for both views computed from one walk.
-        uint256[3] memory samples = [uint256(4.5e18), 999999, 1e21];
+        uint256[4] memory samples = [uint256(4.5e36), 999999, 1e39, 6.12345e38];
         for (uint256 i; i < samples.length; i++) {
             uint256 tick = pair.tickSizeAt(samples[i]);
             assertTrue(pair.priceIsValid(samples[i] - (samples[i] % tick)));

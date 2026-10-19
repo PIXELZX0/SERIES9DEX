@@ -35,18 +35,24 @@ jobs:
     # Add a required reviewer to the "mainnet" environment in repo settings to
     # gate real deployments behind manual approval.
     environment: ${{ inputs.network || 'mainnet' }}
+    # Each network-specific value is `(testnet && X) || (!testnet && Y) || ''`,
+    # never the bare `cond && X || Y` idiom: that one falls through to Y
+    # whenever X is empty, so a testnet run with a missing testnet secret
+    # would silently pick up the mainnet key, RPC or Safe. This form yields
+    # empty instead, and "Validate inputs" stops the run.
     env:
       NETWORK: ${{ inputs.network || 'mainnet' }}
       CHAIN_ID: ${{ inputs.network == 'testnet' && '10143' || '143' }}
-      RPC_URL: ${{ inputs.network == 'testnet' && secrets.MONAD_TESTNET_RPC_URL || secrets.MONAD_RPC_URL }}
-      PRIVATE_KEY: ${{ inputs.network == 'testnet' && secrets.TESTNET_PRIVATE_KEY || secrets.PRIVATE_KEY }}
-      SAFE_ADDRESS: ${{ inputs.network == 'testnet' && secrets.TESTNET_SAFE_ADDRESS || secrets.SAFE_ADDRESS }}
-      # Optional. The guardian may pause the system and nothing else, so it is
-      # not a secret — it ends up on-chain either way. Unset leaves the Safe as
-      # the sole pauser, which still works, just slower in an incident.
-      GUARDIAN_ADDRESS: ${{ inputs.network == 'testnet' && vars.TESTNET_GUARDIAN_ADDRESS || vars.GUARDIAN_ADDRESS }}
-      # Seconds. Unset uses the script's 48h default; the timelock can change
-      # it later, through itself.
+      RPC_URL: ${{ (inputs.network == 'testnet' && secrets.MONAD_TESTNET_RPC_URL) || (inputs.network != 'testnet' && secrets.MONAD_RPC_URL) || '' }}
+      PRIVATE_KEY: ${{ (inputs.network == 'testnet' && secrets.TESTNET_PRIVATE_KEY) || (inputs.network != 'testnet' && secrets.PRIVATE_KEY) || '' }}
+      SAFE_ADDRESS: ${{ (inputs.network == 'testnet' && secrets.TESTNET_SAFE_ADDRESS) || (inputs.network != 'testnet' && secrets.SAFE_ADDRESS) || '' }}
+      # Optional. The guardian may pause the system and cancel queued timelock
+      # operations, and nothing else, so it is not a secret — it ends up
+      # on-chain either way. Unset leaves the Safe as the only fast pauser.
+      GUARDIAN_ADDRESS: ${{ (inputs.network == 'testnet' && vars.TESTNET_GUARDIAN_ADDRESS) || (inputs.network != 'testnet' && vars.GUARDIAN_ADDRESS) || '' }}
+      # Seconds. Delay in front of treasury withdrawals and registry upgrades
+      # or factory changes alike. Unset uses the script's 48h default; the
+      # timelock can change it later, through itself.
       TREASURY_TIMELOCK_DELAY: ${{ vars.TREASURY_TIMELOCK_DELAY }}
       SKIP_VERIFY: ${{ inputs.skip_verify || vars.SKIP_VERIFY || 'false' }}
 
@@ -157,6 +163,22 @@ jobs:
           if THRESHOLD="$(cast call "$SAFE_ADDRESS" 'getThreshold()(uint256)' --rpc-url "$RPC_URL" 2>/dev/null)"; then
             OWNERS="$(cast call "$SAFE_ADDRESS" 'getOwners()(address[])' --rpc-url "$RPC_URL" 2>/dev/null || echo '?')"
             echo "Safe ${SAFE_ADDRESS}: threshold ${THRESHOLD}, owners ${OWNERS}"
+            OWNER_COUNT="$(printf '%s' "$OWNERS" | { grep -oiE '0x[0-9a-f]{40}' || true; } | wc -l | tr -d ' ')"
+            # n-of-n: losing any one key freezes unpause, guardian rotation and
+            # every timelock proposal for good.
+            if [[ "$OWNER_COUNT" -gt 0 && "$THRESHOLD" == "$OWNER_COUNT" ]]; then
+              echo "::warning title=Safe is ${THRESHOLD}-of-${OWNER_COUNT}::One lost signer key freezes governance permanently. Prefer a threshold below the owner count."
+            fi
+            # The guardian exists to stop a compromised Safe. A guardian key
+            # that is also a Safe signer is one key holding a Safe vote, the
+            # pause and the veto at once.
+            if [[ -n "${GUARDIAN_ADDRESS:-}" ]] && printf '%s' "$(lc "$OWNERS")" | grep -q "$(lc "$GUARDIAN_ADDRESS")"; then
+              if [[ "$NETWORK" == "mainnet" ]]; then
+                echo "GUARDIAN_ADDRESS is a signer of the Safe. Use a key that is not." >&2
+                exit 1
+              fi
+              echo "::warning title=Guardian is a Safe signer::Allowed on ${NETWORK}; mainnet refuses it."
+            fi
           else
             echo "::warning title=Owner may not be a Safe::${SAFE_ADDRESS} has code but does not answer getThreshold()"
           fi
@@ -339,8 +361,8 @@ jobs:
             echo "## Series9DEX deployment — ${NETWORK} (chain ${CHAIN_ID})"
             echo ""
             echo "- Ref: \`${GITHUB_REF_NAME}\`"
-            echo "- Safe owner: \`${SAFE_ADDRESS}\`"
-            echo "- Guardian (pause-only, timelock canceller): \`${GUARDIAN_ADDRESS:-none}\`"
+            echo "- Safe (timelock proposer, registry emergency admin): \`${SAFE_ADDRESS}\`"
+            echo "- Guardian (pause, timelock canceller): \`${GUARDIAN_ADDRESS:-none}\`"
             echo ""
             echo "| Contract | Address |"
             echo "|---|---|"

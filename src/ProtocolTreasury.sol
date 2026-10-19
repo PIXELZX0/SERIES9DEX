@@ -8,7 +8,8 @@ import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @notice Passive sink for protocol fees (DEX.md §6). Pools sweep fees here;
-/// owner (Safe) withdraws.
+/// the owner — a TimelockController the Safe proposes to, not the Safe
+/// itself (DEX.md §10) — withdraws.
 contract ProtocolTreasury is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 

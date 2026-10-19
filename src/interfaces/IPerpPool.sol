@@ -10,11 +10,37 @@ struct PerpParams {
     uint64 fundingCoeffPpmPerHour; // funding rate at 100% imbalance
 }
 
+/// @notice Lifecycle of an LP deposit or withdrawal request.
+enum LpStatus {
+    NONE,
+    PENDING,
+    EXECUTED,
+    REFUNDED,
+    CANCELLED
+}
+
 interface IPerpPool {
     function pair() external view returns (address);
     function quoteToken() external view returns (address);
     function baseToken() external view returns (address);
     function lpFeeRatePpm() external view returns (uint32);
-    function addLiquidity(uint256 quoteIn, uint256 minShares, address to) external returns (uint256 shares);
-    function removeLiquidity(uint256 shares, uint256 minQuoteOut, address to) external returns (uint256 quoteOut);
+    function requestDeposit(
+        uint256 quoteIn,
+        uint256 minShares,
+        address receiver,
+        address refundTo,
+        uint256 executionFee
+    ) external returns (uint256 requestId);
+    function requestWithdraw(
+        uint256 shares,
+        uint256 minQuoteOut,
+        address receiver,
+        address refundTo,
+        uint256 executionFee
+    ) external returns (uint256 requestId);
+    function executeLp(uint256 requestId, uint256[3] calldata hints) external;
+    function lpRequestOutcome(uint256 requestId)
+        external
+        view
+        returns (LpStatus status, bool isDeposit, uint256 amount, uint256 out);
 }

@@ -6,7 +6,10 @@ import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC19
 import {TimelockController} from "openzeppelin-contracts/contracts/governance/TimelockController.sol";
 import {IAccessControl} from "openzeppelin-contracts/contracts/access/IAccessControl.sol";
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "openzeppelin-contracts/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {ProtocolTreasury} from "../src/ProtocolTreasury.sol";
+import {DexRegistry} from "../src/DexRegistry.sol";
+import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /// The treasury is owned by a timelock, not by the Safe. These tests cover the
@@ -158,5 +161,98 @@ contract TreasuryTimelockTest is Test {
         assertTrue(timelock.hasRole(timelock.CANCELLER_ROLE(), guardian));
         assertFalse(timelock.hasRole(timelock.PROPOSER_ROLE(), guardian));
         assertFalse(timelock.hasRole(timelock.EXECUTOR_ROLE(), guardian));
+    }
+}
+
+/// The registry is owned by the same timelock (DEX.md §10.3): upgrades and
+/// factory changes wait out the delay and the guardian can kill them, while
+/// the Safe, as emergency admin, keeps the powers that must not wait.
+contract RegistryTimelockTest is Test {
+    TimelockController internal timelock;
+    DexRegistry internal registry;
+
+    address internal safe = makeAddr("safe");
+    address internal guardian = makeAddr("guardian");
+    address internal deployer = makeAddr("deployer");
+    address internal stranger = makeAddr("stranger");
+
+    uint256 internal constant DELAY = 48 hours;
+
+    function setUp() public {
+        // Mirrors DeployDex.
+        address[] memory proposers = new address[](1);
+        proposers[0] = safe;
+        address[] memory executors = new address[](1);
+        executors[0] = address(0);
+        vm.startPrank(deployer);
+        timelock = new TimelockController(DELAY, proposers, executors, deployer);
+        timelock.grantRole(timelock.CANCELLER_ROLE(), guardian);
+        timelock.renounceRole(timelock.DEFAULT_ADMIN_ROLE(), deployer);
+
+        ProtocolTreasury treasury = ProtocolTreasury(
+            address(
+                new ERC1967Proxy(
+                    address(new ProtocolTreasury()), abi.encodeCall(ProtocolTreasury.initialize, (address(timelock)))
+                )
+            )
+        );
+        registry = DexRegistry(
+            address(
+                new ERC1967Proxy(
+                    address(new DexRegistry()), abi.encodeCall(DexRegistry.initialize, (deployer, address(treasury)))
+                )
+            )
+        );
+        registry.setFactories(address(new SpotPoolFactory(address(registry))), address(0));
+        registry.setGuardian(guardian);
+        registry.setEmergencyAdmin(safe);
+        registry.transferOwnership(address(timelock));
+        vm.stopPrank();
+    }
+
+    function _schedule(bytes memory payload) internal returns (bytes32 id) {
+        vm.prank(safe);
+        timelock.schedule(address(registry), 0, payload, bytes32(0), bytes32(0), DELAY);
+        id = timelock.hashOperation(address(registry), 0, payload, bytes32(0), bytes32(0));
+    }
+
+    function testSafeCannotRepointFactoriesOrUpgradeDirectly() public {
+        vm.prank(safe);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, safe));
+        registry.setFactories(address(1), address(0));
+        address impl = address(new DexRegistry());
+        vm.prank(safe);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, safe));
+        registry.upgradeToAndCall(impl, "");
+    }
+
+    function testFactoryChangeWaitsOutTheDelay() public {
+        bytes memory payload = abi.encodeCall(DexRegistry.setFactories, (address(0xF00D), address(0)));
+        _schedule(payload);
+        vm.warp(block.timestamp + DELAY - 1);
+        vm.expectRevert();
+        timelock.execute(address(registry), 0, payload, bytes32(0), bytes32(0));
+        vm.warp(block.timestamp + 1);
+        vm.prank(stranger);
+        timelock.execute(address(registry), 0, payload, bytes32(0), bytes32(0));
+        assertEq(registry.spotPoolFactory(), address(0xF00D));
+    }
+
+    function testGuardianCancelsAQueuedUpgrade() public {
+        bytes memory payload = abi.encodeCall(UUPSUpgradeable.upgradeToAndCall, (address(new DexRegistry()), ""));
+        bytes32 id = _schedule(payload);
+        vm.prank(guardian);
+        timelock.cancel(id);
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.expectRevert();
+        timelock.execute(address(registry), 0, payload, bytes32(0), bytes32(0));
+    }
+
+    function testSafeStillRestartsAtOnce() public {
+        vm.prank(guardian);
+        registry.pause();
+        vm.prank(safe);
+        registry.unpause();
+        assertFalse(registry.paused());
     }
 }

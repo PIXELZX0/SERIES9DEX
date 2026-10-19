@@ -12,7 +12,7 @@ import {SpotPoolFactory} from "../src/SpotPoolFactory.sol";
 import {PerpPool} from "../src/PerpPool.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
 import {Pair} from "../src/Pair.sol";
-import {PerpParams} from "../src/interfaces/IPerpPool.sol";
+import {PerpParams, LpStatus} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 contract DexPositionManagerTest is Test {
@@ -67,10 +67,21 @@ contract DexPositionManagerTest is Test {
 
         pair = Pair(registry.createPair(address(base), address(quote)));
         spot = SpotPool(pair.createSpotPool(FEE_PPM));
+        // The perp prices off its own seeded pool, so the spot tests below
+        // still start from an empty `spot`.
+        SpotPool oracle = SpotPool(pair.createSpotPool(500));
+        address seeder = makeAddr("seeder");
+        base.mint(seeder, 1_000 ether);
+        quote.mint(seeder, 4_000 ether);
+        vm.startPrank(seeder);
+        base.approve(address(oracle), type(uint256).max);
+        quote.approve(address(oracle), type(uint256).max);
+        oracle.addLiquidity(1_000 ether, 4_000 ether, 0, 0, seeder);
+        vm.stopPrank();
         perp = PerpPool(
             pair.createPerpPool(
                 address(quote),
-                address(spot),
+                address(oracle),
                 FEE_PPM,
                 PerpParams({
                     maxLeverageX: 10,
@@ -196,23 +207,92 @@ contract DexPositionManagerTest is Test {
 
     // ------------------------------------------------------------------ perp
 
+    function _settleLp(uint256 requestId) internal {
+        (,,,,, uint64 settleAt,,,,,,) = perp.lpRequests(requestId);
+        vm.warp(settleAt);
+    }
+
     function test_mintPerp_andDecrease() public {
         vm.prank(alice);
-        (uint256 tokenId, uint256 shares) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
+        (uint256 tokenId, uint256 requestId) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
 
         assertEq(manager.ownerOf(tokenId), alice);
         (address pool, bool isSpot, uint256 recorded) = manager.positions(tokenId);
         assertEq(pool, address(perp));
         assertFalse(isSpot);
+        assertEq(recorded, 0, "shares arrive when the deposit settles");
+        assertEq(manager.pendingPerpRequest(tokenId), requestId);
+
+        _settleLp(requestId);
+        vm.prank(bob); // anyone may settle
+        manager.settlePerp(tokenId);
+        (,, recorded) = manager.positions(tokenId);
+        uint256 shares = 100_000 ether - perp.MINIMUM_LIQUIDITY();
         assertEq(recorded, shares);
         assertEq(perp.sharesOf(address(manager)), shares);
+        assertEq(manager.pendingPerpRequest(tokenId), 0);
 
         uint256 quoteBefore = quote.balanceOf(alice);
         vm.prank(alice);
-        uint256 quoteOut = manager.decreasePerp(tokenId, shares, 0, alice, DEADLINE);
+        uint256 withdrawId = manager.decreasePerp(tokenId, shares, 0, alice, DEADLINE);
+        (,, recorded) = manager.positions(tokenId);
+        assertEq(recorded, 0, "shares leave the token at request");
+        _settleLp(withdrawId);
+        manager.settlePerp(tokenId);
         // Everything but the MINIMUM_LIQUIDITY the pool burned on first deposit.
-        assertEq(quoteOut, 100_000 ether - perp.MINIMUM_LIQUIDITY());
-        assertEq(quote.balanceOf(alice), quoteBefore + quoteOut);
+        assertEq(quote.balanceOf(alice), quoteBefore + shares);
+
+        vm.prank(alice);
+        manager.burn(tokenId);
+    }
+
+    /// One pending request per token: nothing else happens to it, and it
+    /// cannot be burned, until the request is booked. A withdrawal that fails
+    /// gives its shares back to the token.
+    function test_perpPendingRequestGuardsTheToken() public {
+        vm.prank(alice);
+        (uint256 tokenId, uint256 requestId) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
+        vm.startPrank(alice);
+        vm.expectRevert(DexPositionManager.RequestPending.selector);
+        manager.increasePerp(tokenId, 1 ether, 0, DEADLINE);
+        vm.expectRevert(DexPositionManager.PositionNotEmpty.selector);
+        manager.burn(tokenId);
+        vm.stopPrank();
+
+        _settleLp(requestId);
+        manager.settlePerp(tokenId);
+        (,, uint256 shares) = manager.positions(tokenId);
+
+        vm.prank(alice);
+        uint256 withdrawId = manager.decreasePerp(tokenId, shares, type(uint256).max, alice, DEADLINE);
+        _settleLp(withdrawId);
+        manager.settlePerp(tokenId);
+        (LpStatus status,,,) = perp.lpRequestOutcome(withdrawId);
+        assertEq(uint8(status), uint8(LpStatus.REFUNDED));
+        (,, uint256 after_) = manager.positions(tokenId);
+        assertEq(after_, shares, "failed withdrawal books its shares back");
+
+        vm.expectRevert(DexPositionManager.NoPendingRequest.selector);
+        manager.settlePerp(tokenId);
+
+        // A stranger cannot park a dust deposit on the token to block it.
+        vm.prank(bob);
+        vm.expectRevert(DexPositionManager.NotAuthorized.selector);
+        manager.increasePerp(tokenId, 1, 0, DEADLINE);
+    }
+
+    /// A deposit that fails is refunded to whoever paid for it, not to the
+    /// token: the token never held that quote.
+    function test_failedPerpDepositRefundsTheDepositor() public {
+        uint256 before = quote.balanceOf(alice);
+        vm.prank(alice);
+        (uint256 tokenId, uint256 requestId) =
+            manager.mintPerp(address(perp), 100_000 ether, type(uint256).max, bob, DEADLINE);
+        _settleLp(requestId);
+        manager.settlePerp(tokenId);
+        assertEq(quote.balanceOf(alice), before);
+        (,, uint256 recorded) = manager.positions(tokenId);
+        assertEq(recorded, 0);
     }
 
     function test_perpAndSpotEntryPointsAreNotInterchangeable() public {
@@ -449,7 +529,7 @@ contract DexPositionManagerTest is Test {
 
         (uint256 spotId, uint256 liquidity) =
             manager.mintSpot(address(spot), 1000 ether, 4000 ether, 0, 0, alice, DEADLINE);
-        (uint256 perpId, uint256 shares) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
+        (uint256 perpId,) = manager.mintPerp(address(perp), 100_000 ether, 0, alice, DEADLINE);
 
         vm.expectRevert(DexPositionManager.Expired.selector);
         manager.increaseSpot(spotId, 1 ether, 4 ether, 0, 0, stale);
@@ -458,7 +538,7 @@ contract DexPositionManagerTest is Test {
         vm.expectRevert(DexPositionManager.Expired.selector);
         manager.increasePerp(perpId, 1 ether, 0, stale);
         vm.expectRevert(DexPositionManager.Expired.selector);
-        manager.decreasePerp(perpId, shares, 0, alice, stale);
+        manager.decreasePerp(perpId, 1, 0, alice, stale);
 
         // The current block still works, so the guard is on staleness only.
         manager.decreaseSpot(spotId, liquidity, 0, 0, alice, block.timestamp);
