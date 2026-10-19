@@ -11,11 +11,12 @@ import {PerpPool} from "../src/PerpPool.sol";
 import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
 import {Pair} from "../src/Pair.sol";
 import {IPair} from "../src/interfaces/IPair.sol";
-import {PerpParams} from "../src/interfaces/IPerpPool.sol";
+import {PerpParams, LpStatus} from "../src/interfaces/IPerpPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /// Full lifecycle: pair creation -> LP -> resting limit order -> market swap
 /// triggers the auto-match -> perp trading against the TWAP -> liquidation.
+/// Every perp step goes through its request and its settlement window.
 contract DexEndToEndTest is Test {
     DexRegistry internal registry;
     ProtocolTreasury internal treasury;
@@ -32,6 +33,7 @@ contract DexEndToEndTest is Test {
     address internal degen = makeAddr("degen");
 
     function setUp() public {
+        vm.warp(1_700_000_000);
         treasury = ProtocolTreasury(
             address(
                 new ERC1967Proxy(address(new ProtocolTreasury()), abi.encodeCall(ProtocolTreasury.initialize, (owner)))
@@ -76,7 +78,7 @@ contract DexEndToEndTest is Test {
         // 3. Maker rests a sell just above market.
         vm.startPrank(maker);
         base.approve(address(pair), type(uint256).max);
-        uint256 orderId = pair.placeOrder(IPair.Side.SELL, 4.05e18, 5 ether, uint64(block.timestamp + 7 days), 0);
+        uint256 orderId = pair.placeOrder(IPair.Side.SELL, 4.05e36, 5 ether, uint64(block.timestamp + 7 days), 0);
         vm.stopPrank();
 
         // 4. Taker market-buys; the price crosses 4.05 and the hook fills the
@@ -97,31 +99,38 @@ contract DexEndToEndTest is Test {
 
         // 6. A perp pool goes live against the same pair, LP funds it.
         perp = PerpPool(pair.createPerpPool(address(quote), address(spot), 3000, PerpParams(10, 500, 100, 8000, 100)));
+        uint256[3] memory noHints;
         vm.startPrank(lpUser);
         quote.approve(address(perp), type(uint256).max);
-        perp.addLiquidity(100_000 ether, 0, lpUser);
+        uint256 depositId = perp.requestDeposit(100_000 ether, 0, lpUser, lpUser, 0);
         vm.stopPrank();
+        (,,,,, uint64 depositAt,,,,,,) = perp.lpRequests(depositId);
+        vm.warp(depositAt);
+        perp.executeLp(depositId, noHints);
+        (LpStatus depositStatus,,,) = perp.lpRequestOutcome(depositId);
+        assertEq(uint8(depositStatus), uint8(LpStatus.EXECUTED));
 
-        // 7. TWAP warm-up, then a degen opens a 8x long.
-        perp.pokeMark();
-        vm.warp(vm.getBlockTimestamp() + 301);
-        perp.pokeMark();
-        uint256 entryMark = perp.cachedMarkX18();
-        assertGt(entryMark, 4e18); // price rose in step 4
-
+        // 7. Once the oracle has an hour of history, a degen requests a ~8x
+        //    long; it opens at the mark of the window after the request,
+        //    which has the price from step 4 in it.
+        vm.warp(block.timestamp + perp.DEPTH_WINDOW());
+        uint256 entryMark = perp.markX36();
+        assertGt(entryMark, 4e36); // price rose in step 4
         vm.startPrank(degen);
         quote.approve(address(perp), type(uint256).max);
-        perp.openPosition(true, 2_100 ether, 4_000 ether);
+        perp.requestIncrease(true, 2_100 ether, 4_000 ether, 0, 0);
         vm.stopPrank();
+        (, uint64 openAt,,,,,,,) = perp.orders(degen, true);
+        vm.warp(openAt);
+        assertTrue(perp.executeOrder(degen, true, noHints));
 
-        // 8. Market dumps ~10%; mark follows after a window.
+        // 8. Market dumps ~10%; the mark follows a window later.
         vm.startPrank(taker);
         base.approve(address(spot), type(uint256).max);
         spot.swapExactIn(address(base), 600 ether, 0, taker);
         vm.stopPrank();
-        vm.warp(vm.getBlockTimestamp() + 301);
-        perp.pokeMark();
-        assertLt(perp.cachedMarkX18(), entryMark);
+        vm.warp((block.timestamp / 60 + 1) * 60 + perp.MARK_WINDOW());
+        assertLt(perp.markX36(), entryMark);
 
         // 9. Anyone liquidates the underwater long and pockets the reward.
         uint256 keeperBalBefore = quote.balanceOf(taker);

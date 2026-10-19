@@ -9,9 +9,21 @@ interface ISpotPool {
     function getReserves() external view returns (uint256 reserve0, uint256 reserve1, uint64 blockTimestampLast);
     function getAmountOut(address tokenIn, uint256 amountIn) external view returns (uint256 amountOut);
     function getAmountIn(address tokenIn, uint256 amountOut) external view returns (uint256 amountIn);
-    function spotPriceX18() external view returns (uint256);
+    function spotPriceX36() external view returns (uint256);
     function price0CumulativeLast() external view returns (uint256);
     function price1CumulativeLast() external view returns (uint256);
+    function ORACLE_EPOCH() external view returns (uint256);
+    function observe(uint256 epoch, uint256 hint)
+        external
+        view
+        returns (
+            uint256 price0Cumulative,
+            uint256 price1Cumulative,
+            uint256 inverseLiquidityCumulative,
+            uint256 reserve0At,
+            uint256 reserve1At
+        );
+    function enableOracle() external;
     function addLiquidity(
         uint256 amount0Desired,
         uint256 amount1Desired,

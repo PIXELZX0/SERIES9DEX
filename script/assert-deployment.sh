@@ -22,6 +22,8 @@ POSITION_MANAGER="$(get dexPositionManager)"
 ROUTER="$(get dexRouter)"
 GUARDIAN="$(get guardian)"
 TIMELOCK="$(get treasuryTimelock)"
+DEPLOYER="$(get deployer)"
+CHAIN_ID_JSON="$(get chainId)"
 
 fail=0
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
@@ -35,10 +37,13 @@ check() { # label expected actual
 }
 call() { cast call "$1" "$2" --rpc-url "$RPC_URL"; }
 
-check "registry.owner()"           "$SAFE_ADDRESS" "$(call "$REGISTRY" 'owner()(address)')"
-# The treasury is owned by the timelock, never by the Safe directly: a key
-# compromise should be an observable, cancellable proposal, not an instant drain.
+# The timelock owns both the treasury and the registry, never the Safe
+# directly: a key compromise should be an observable, cancellable proposal —
+# for a withdrawal, an upgrade or a factory change alike — not an instant one.
+check "registry.owner()"           "$TIMELOCK"     "$(call "$REGISTRY" 'owner()(address)')"
 check "treasury.owner()"           "$TIMELOCK"     "$(call "$TREASURY" 'owner()(address)')"
+# The Safe keeps the two powers that are useless behind a delay.
+check "registry.emergencyAdmin()"  "$SAFE_ADDRESS" "$(call "$REGISTRY" 'emergencyAdmin()(address)')"
 check "registry.treasury()"        "$TREASURY"     "$(call "$REGISTRY" 'treasury()(address)')"
 check "registry.spotPoolFactory()" "$SPOT_FACTORY" "$(call "$REGISTRY" 'spotPoolFactory()(address)')"
 check "registry.perpPoolFactory()" "$PERP_FACTORY" "$(call "$REGISTRY" 'perpPoolFactory()(address)')"
@@ -57,8 +62,21 @@ check "timelock self-admin"        "true"          "$(has_role "$ADMIN_ROLE" "$T
 check "safe is not timelock admin" "false"         "$(has_role "$ADMIN_ROLE" "$SAFE_ADDRESS")"
 PROPOSER_ROLE="$(cast keccak 'PROPOSER_ROLE')"
 check "safe proposes"              "true"          "$(has_role "$PROPOSER_ROLE" "$SAFE_ADDRESS")"
+# The deployer wired everything and must have kept nothing.
+check "deployer not timelock admin" "false"        "$(has_role "$ADMIN_ROLE" "$DEPLOYER")"
+check "deployer not proposer"      "false"         "$(has_role "$PROPOSER_ROLE" "$DEPLOYER")"
+CANCELLER_ROLE="$(cast keccak 'CANCELLER_ROLE')"
+check "deployer not canceller"     "false"         "$(has_role "$CANCELLER_ROLE" "$DEPLOYER")"
+
+# The delay is the whole defence: a zero-delay timelock makes registry
+# upgrades and treasury withdrawals instant and would pass every role check.
+DELAY="$(cast call "$TIMELOCK" 'getMinDelay()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')"
+check "timelock delay"             "${TREASURY_TIMELOCK_DELAY:-172800}" "$DELAY"
+if [[ "$CHAIN_ID_JSON" == "143" && "$DELAY" -lt 86400 ]]; then
+  echo "::error title=Deployment check failed::timelock delay ${DELAY}s is under a day on mainnet"
+  fail=1
+fi
 if [[ "$GUARDIAN" != "0x0000000000000000000000000000000000000000" ]]; then
-  CANCELLER_ROLE="$(cast keccak 'CANCELLER_ROLE')"
   check "guardian cancels"         "true"          "$(has_role "$CANCELLER_ROLE" "$GUARDIAN")"
 fi
 

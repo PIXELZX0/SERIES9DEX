@@ -182,6 +182,97 @@ contract DexRegistryTest is Test {
         registry.setFactories(address(1), address(0));
     }
 
+    /// The escrow drain in the audit needed exactly this: repoint the
+    /// factory, then add a pool to a pair that already held orders. A pair
+    /// keeps the factories it was deployed with, so the new one only ever
+    /// reaches pairs created after it.
+    function testFactoryChangeNeverReachesAnExistingPair() public {
+        Pair pair = Pair(registry.createPair(address(tokenA), address(tokenB)));
+        SpotPoolFactory replacement = new SpotPoolFactory(address(registry));
+        vm.prank(owner);
+        registry.setFactories(address(replacement), address(0));
+
+        assertEq(pair.spotPoolFactory(), address(factory));
+        address pool = pair.createSpotPool(3000);
+        // Deployed by the original factory: CREATE nonce 1 of that factory.
+        assertEq(pool, vm.computeCreateAddress(address(factory), 1));
+
+        MockERC20 tokenC = new MockERC20("C", "C", 18);
+        Pair later = Pair(registry.createPair(address(tokenA), address(tokenC)));
+        assertEq(later.spotPoolFactory(), address(replacement));
+    }
+
+    function testCreatePairNeedsASpotFactory() public {
+        DexRegistry bare = DexRegistry(
+            address(
+                new ERC1967Proxy(
+                    address(new DexRegistry()), abi.encodeCall(DexRegistry.initialize, (owner, address(treasury)))
+                )
+            )
+        );
+        vm.expectRevert(DexRegistry.FactoryNotSet.selector);
+        bare.createPair(address(tokenA), address(tokenB));
+    }
+
+    // ------------------------------------------------------------------ roles
+
+    /// Owner (the timelock in production) holds upgrades and factories; the
+    /// emergency admin (the Safe) restarts the system and names the guardian.
+    function testRolesAreSplitByUrgency() public {
+        address safe = makeAddr("safe");
+        address guardian = makeAddr("guardian");
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, stranger));
+        registry.setEmergencyAdmin(safe);
+        vm.prank(owner);
+        registry.setEmergencyAdmin(safe);
+        assertEq(registry.emergencyAdmin(), safe);
+
+        // The Safe cannot touch what changes code.
+        vm.prank(safe);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, safe));
+        registry.setFactories(address(factory), address(0));
+        // Deployed before arming expectRevert, which the CREATE would consume.
+        address newImpl = address(new DexRegistry());
+        vm.prank(safe);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, safe));
+        registry.upgradeToAndCall(newImpl, "");
+
+        // It can do what must not wait.
+        vm.prank(safe);
+        registry.setGuardian(guardian);
+        vm.prank(guardian);
+        registry.pause();
+        vm.prank(guardian);
+        vm.expectRevert(DexRegistry.NotEmergencyAdmin.selector);
+        registry.unpause();
+        vm.prank(safe);
+        registry.unpause();
+
+        // Strangers can do neither; the owner can do both, so a lost Safe is
+        // a delay rather than a permanent loss of control.
+        vm.prank(stranger);
+        vm.expectRevert(DexRegistry.NotEmergencyAdmin.selector);
+        registry.setGuardian(stranger);
+        vm.prank(owner);
+        registry.setGuardian(address(0));
+        assertEq(registry.guardian(), address(0));
+    }
+
+    function testPauseWindowRecordsBothEnds() public {
+        vm.warp(10_000);
+        vm.prank(owner);
+        registry.pause();
+        vm.warp(10_500);
+        vm.prank(owner);
+        registry.unpause();
+        (bool isPaused, uint64 pausedAt, uint64 unpausedAt) = registry.pauseWindow();
+        assertFalse(isPaused);
+        assertEq(pausedAt, 10_000);
+        assertEq(unpausedAt, 10_500);
+    }
+
     function testFactoryOnlyPair() public {
         vm.expectRevert(SpotPoolFactory.NotPair.selector);
         factory.deploy(address(treasury), address(tokenA), address(tokenB), 3000);

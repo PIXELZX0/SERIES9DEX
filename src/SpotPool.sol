@@ -20,12 +20,40 @@ import {Pausing} from "./libraries/Pausing.sol";
 /// ERC-721 minted by `DexPositionManager`, which custodies the shares. This
 /// mirrors Uniswap V3, where the core pool tracks positions and only the
 /// periphery tokenizes them.
+///
+/// Prices are raw token1 units per raw token0 unit, scaled by 1e36. At 1e18
+/// a pair whose raw price is tiny — an 18-decimal base against a 6-decimal
+/// quote at $0.00001 is 1e-17 — kept one significant digit, and anything
+/// below 1e-18 read as zero. 1e36 keeps six digits down to a raw price of
+/// 1e-30, and reserves are capped at uint112 so `reserve * 1e36` cannot
+/// overflow.
 contract SpotPool is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    /// @dev State of the pool just before the first update of an oracle
+    /// epoch: the accumulators and reserves as of the update before it, and
+    /// that update's timestamp. Nothing changed in between, so the pool's
+    /// price and depth at any instant in [timestamp, this epoch's first
+    /// update] follow from this record alone.
+    struct Observation {
+        uint256 price0Cumulative;
+        uint256 price1Cumulative;
+        uint256 inverseLiquidityCumulative;
+        uint112 reserve0;
+        uint112 reserve1;
+        uint32 timestamp;
+    }
+
     uint256 public constant MINIMUM_LIQUIDITY = 1000;
     uint256 public constant MAX_AUTO_FILLS = 5;
+    /// @notice Perp marks are read at multiples of this many seconds.
+    uint256 public constant ORACLE_EPOCH = 60;
+    /// @notice Empty epochs `observe` walks over before it asks for a hint:
+    /// an hour of idleness, a few cold reads each, so only a request
+    /// executed long after an idle stretch needs one.
+    uint256 public constant MAX_OBSERVATION_PROBES = 64;
     uint256 internal constant PPM = 1e6;
+    uint256 internal constant PRICE_SCALE = 1e36;
 
     address public immutable registry;
     address public immutable pair;
@@ -39,11 +67,23 @@ contract SpotPool is ReentrancyGuard {
 
     uint256 public reserve0;
     uint256 public reserve1;
-    uint256 public price0CumulativeLast;
-    uint256 public price1CumulativeLast;
+    uint256 public price0CumulativeLast; // X36, wraps by design
+    uint256 public price1CumulativeLast; // X36, wraps by design
+    /// @notice Running sum of 1e36 / sqrt(reserve0 * reserve1) per second.
+    /// Perps size open interest against this pool's depth by the harmonic
+    /// mean it gives: a stretch of thin pool dominates it however short
+    /// the deep stretches around it, where an arithmetic mean of the depth
+    /// could be held up by a moment of borrowed liquidity. Wraps by design.
+    uint256 public inverseLiquidityCumulativeLast;
     uint64 public blockTimestampLast;
     uint256 public protocolFees0;
     uint256 public protocolFees1;
+
+    /// @notice Set by the pair once a perp market prices off this pool.
+    /// Recording observations costs a few storage writes per epoch, which a
+    /// pool nothing reads from has no reason to pay.
+    bool public oracleEnabled;
+    mapping(uint256 => Observation) internal _observations; // epoch index => observation
 
     error InvalidToken();
     error ZeroAmount();
@@ -55,6 +95,10 @@ contract SpotPool is ReentrancyGuard {
     error InsufficientShares();
     error SlippageExceeded();
     error OnlyPair();
+    error ReserveOverflow();
+    error ObservationUnavailable();
+    error ObservationHintRequired();
+    error InvalidObservationHint();
 
     event LiquidityAdded(
         address indexed provider, address indexed to, uint256 amount0, uint256 amount1, uint256 liquidity
@@ -67,6 +111,7 @@ contract SpotPool is ReentrancyGuard {
     );
     event ProtocolFeesCollected(uint256 amount0, uint256 amount1);
     event Skimmed(address indexed to, uint256 amount0, uint256 amount1);
+    event OracleEnabled();
 
     constructor(
         address registry_,
@@ -90,9 +135,9 @@ contract SpotPool is ReentrancyGuard {
         return (reserve0, reserve1, blockTimestampLast);
     }
 
-    function spotPriceX18() public view returns (uint256) {
+    function spotPriceX36() public view returns (uint256) {
         if (reserve0 == 0) revert InsufficientLiquidity();
-        return reserve1 * 1e18 / reserve0;
+        return reserve1 * PRICE_SCALE / reserve0;
     }
 
     function getAmountOut(address tokenIn, uint256 amountIn) public view returns (uint256) {
@@ -100,18 +145,101 @@ contract SpotPool is ReentrancyGuard {
         if (reserveIn == 0 || reserveOut == 0) revert InsufficientLiquidity();
         (uint256 totalFee,,) = FeeSplit.split(amountIn, lpFeeRatePpm);
         uint256 effectiveIn = amountIn - totalFee;
-        return reserveOut * effectiveIn / (reserveIn + effectiveIn);
+        return Math.mulDiv(reserveOut, effectiveIn, reserveIn + effectiveIn);
     }
 
     /// @notice Input required to get at least `amountOut` out, fee included.
-    /// Rounds up at both steps, so quoting then swapping this amount never
-    /// falls a wei short of the target.
+    /// The fee rounds up, so `amountIn - fee(amountIn)` is
+    /// `floor(amountIn * (1e6 - fee) / 1e6)` and the smallest input clearing
+    /// `effectiveIn` is exactly the ceiling below: quoting then swapping this
+    /// amount never falls a wei short of the target, and never overpays.
     function getAmountIn(address tokenIn, uint256 amountOut) public view returns (uint256) {
         (uint256 reserveIn, uint256 reserveOut) = _orientedReserves(tokenIn);
         if (reserveIn == 0 || reserveOut == 0) revert InsufficientLiquidity();
         if (amountOut >= reserveOut) revert InsufficientLiquidity();
         uint256 effectiveIn = Math.mulDiv(reserveIn, amountOut, reserveOut - amountOut, Math.Rounding.Ceil);
         return Math.mulDiv(effectiveIn, PPM, PPM - lpFeeRatePpm, Math.Rounding.Ceil);
+    }
+
+    /// @notice The accumulators as of the epoch boundary `epoch * ORACLE_EPOCH`.
+    ///
+    /// The first update at or after a boundary always starts a new epoch, so
+    /// it is the one that wrote the observation covering that boundary. For
+    /// an active pool that record sits at the boundary's own index; after an
+    /// idle stretch it sits further on, and `hint` names its index. With no
+    /// hint the walk covers `MAX_OBSERVATION_PROBES` empty epochs, which is
+    /// always enough for a boundary within that many epochs of the last
+    /// update.
+    ///
+    /// Also returns the reserves in effect at the boundary.
+    ///
+    /// Reverts `ObservationUnavailable` when the boundary predates the pool's
+    /// liquidity or its oracle being enabled — a fact about history, so it
+    /// never turns into a value later.
+    function observe(uint256 epoch, uint256 hint)
+        external
+        view
+        returns (
+            uint256 price0Cumulative,
+            uint256 price1Cumulative,
+            uint256 inverseLiquidityCumulative,
+            uint256 reserve0At,
+            uint256 reserve1At
+        )
+    {
+        uint256 target = epoch * ORACLE_EPOCH;
+        if (target > block.timestamp) revert ObservationUnavailable();
+        uint256 last = blockTimestampLast;
+
+        Observation memory o;
+        if (target > last) {
+            // Nothing has happened since the boundary: the live state covers it.
+            // An update in the boundary's own second goes to the record below
+            // instead, so the reserves reported for a boundary are those in
+            // effect up to it — the same answer before and after later trades.
+            o = Observation(
+                price0CumulativeLast,
+                price1CumulativeLast,
+                inverseLiquidityCumulativeLast,
+                uint112(reserve0),
+                uint112(reserve1),
+                uint32(last)
+            );
+        } else if (hint != 0) {
+            o = _observations[hint];
+            if (o.reserve0 == 0 || hint < epoch || o.timestamp >= target) revert InvalidObservationHint();
+        } else {
+            uint256 lastEpoch = last / ORACLE_EPOCH;
+            uint256 i = epoch;
+            o = _observations[i];
+            while (o.reserve0 == 0) {
+                // The covering update is never later than the last one; if no
+                // record turns up by then, it was made before recording began.
+                if (i >= lastEpoch) revert ObservationUnavailable();
+                if (i - epoch >= MAX_OBSERVATION_PROBES) revert ObservationHintRequired();
+                o = _observations[++i];
+            }
+            if (o.timestamp >= target) revert ObservationUnavailable();
+        }
+        if (o.reserve0 == 0 || o.reserve1 == 0) revert ObservationUnavailable();
+
+        uint256 dt = target - o.timestamp;
+        unchecked {
+            price0Cumulative = o.price0Cumulative + (uint256(o.reserve1) * PRICE_SCALE / o.reserve0) * dt;
+            price1Cumulative = o.price1Cumulative + (uint256(o.reserve0) * PRICE_SCALE / o.reserve1) * dt;
+            inverseLiquidityCumulative =
+                o.inverseLiquidityCumulative + dt * PRICE_SCALE / Math.sqrt(uint256(o.reserve0) * o.reserve1);
+        }
+        (reserve0At, reserve1At) = (o.reserve0, o.reserve1);
+    }
+
+    // ------------------------------------------------------------- oracle
+
+    function enableOracle() external {
+        if (msg.sender != pair) revert OnlyPair();
+        if (oracleEnabled) return;
+        oracleEnabled = true;
+        emit OracleEnabled();
     }
 
     // ------------------------------------------------------------ liquidity
@@ -291,21 +419,36 @@ contract SpotPool is ReentrancyGuard {
         if (received == 0) revert ZeroAmount();
     }
 
-    /// @dev Accrue the TWAP accumulators against the *old* reserves, then
-    /// store the new ones. Overflow wraps by design (UniV2 pattern);
-    /// consumers subtract in unchecked blocks.
+    /// @dev Accrue the accumulators against the *old* reserves, then store the
+    /// new ones. Overflow wraps by design (UniV2 pattern); consumers subtract
+    /// in unchecked blocks. The first update of an oracle epoch first records
+    /// the state it is about to overwrite, which is what `observe` reads.
     function _update(uint256 newReserve0, uint256 newReserve1) internal {
-        uint64 nowTs = uint64(block.timestamp);
-        uint256 timeElapsed = nowTs - blockTimestampLast;
-        if (timeElapsed > 0 && reserve0 > 0 && reserve1 > 0) {
+        if (newReserve0 > type(uint112).max || newReserve1 > type(uint112).max) revert ReserveOverflow();
+        uint256 last = blockTimestampLast;
+        uint256 timeElapsed = block.timestamp - last;
+        uint256 r0 = reserve0;
+        uint256 r1 = reserve1;
+        if (timeElapsed > 0 && r0 > 0 && r1 > 0) {
+            if (oracleEnabled && block.timestamp / ORACLE_EPOCH > last / ORACLE_EPOCH) {
+                _observations[block.timestamp / ORACLE_EPOCH] = Observation(
+                    price0CumulativeLast,
+                    price1CumulativeLast,
+                    inverseLiquidityCumulativeLast,
+                    uint112(r0),
+                    uint112(r1),
+                    uint32(last)
+                );
+            }
             unchecked {
-                price0CumulativeLast += (reserve1 * 1e18 / reserve0) * timeElapsed;
-                price1CumulativeLast += (reserve0 * 1e18 / reserve1) * timeElapsed;
+                price0CumulativeLast += (r1 * PRICE_SCALE / r0) * timeElapsed;
+                price1CumulativeLast += (r0 * PRICE_SCALE / r1) * timeElapsed;
+                inverseLiquidityCumulativeLast += timeElapsed * PRICE_SCALE / Math.sqrt(r0 * r1);
             }
         }
         reserve0 = newReserve0;
         reserve1 = newReserve1;
-        blockTimestampLast = nowTs;
+        blockTimestampLast = uint64(block.timestamp);
     }
 
     function _orientedReserves(address tokenIn) internal view returns (uint256 reserveIn, uint256 reserveOut) {

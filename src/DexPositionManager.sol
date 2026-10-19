@@ -10,7 +10,7 @@ import {Base64} from "openzeppelin-contracts/contracts/utils/Base64.sol";
 import {Strings} from "openzeppelin-contracts/contracts/utils/Strings.sol";
 import {IDexRegistry} from "./interfaces/IDexRegistry.sol";
 import {ISpotPool} from "./interfaces/ISpotPool.sol";
-import {IPerpPool} from "./interfaces/IPerpPool.sol";
+import {IPerpPool, LpStatus} from "./interfaces/IPerpPool.sol";
 
 /// @notice ERC-721 wrapper that turns pool LP shares into transferable
 /// position NFTs, mirroring Uniswap V3's NonfungiblePositionManager: the NFT
@@ -22,6 +22,10 @@ import {IPerpPool} from "./interfaces/IPerpPool.sol";
 /// tokenId. Spot fees auto-compound into the pool reserves and perp fees into
 /// `totalLiquidity`, so a position accrues fees through share value — there is
 /// no separate `collect()` to call.
+///
+/// Perp vault deposits and withdrawals settle in two steps (DEX.md §5.2.1),
+/// so a perp position carries at most one pending request. `settlePerp`
+/// (anyone) executes it once settled and books the outcome on the token.
 ///
 /// Every pool address is checked against the registry before the manager will
 /// touch it: without that, a caller could point the manager at a contract that
@@ -39,6 +43,8 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
     uint256 public nextTokenId = 1;
 
     mapping(uint256 => Position) public positions;
+    /// @notice A perp position's pending vault request, 0 when none.
+    mapping(uint256 => uint256) public pendingPerpRequest;
 
     error ZeroAddress();
     error Expired();
@@ -48,6 +54,8 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
     error NotAuthorized();
     error InsufficientPositionLiquidity();
     error PositionNotEmpty();
+    error RequestPending();
+    error NoPendingRequest();
 
     event PositionMinted(uint256 indexed tokenId, address indexed pool, address indexed to, uint256 liquidity);
     event LiquidityIncreased(uint256 indexed tokenId, uint256 liquidityAdded, uint256 liquidityAfter);
@@ -119,43 +127,72 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
 
     // ------------------------------------------------------------------ perp
 
+    /// @notice Mint a perp position backed by a deposit request. The token
+    /// exists at once with no shares; they are booked by `settlePerp`. A
+    /// deposit that fails is refunded to the caller, not to the token.
     function mintPerp(address pool, uint256 quoteIn, uint256 minShares, address to, uint256 deadline)
         external
         nonReentrant
         ensure(deadline)
-        returns (uint256 tokenId, uint256 shares)
+        returns (uint256 tokenId, uint256 requestId)
     {
         _requirePerpPool(pool);
-        shares = _addPerp(pool, quoteIn, minShares);
-        tokenId = _mintPosition(pool, false, shares, to);
+        tokenId = _mintPosition(pool, false, 0, to);
+        requestId = _requestPerpDeposit(pool, quoteIn, minShares);
+        pendingPerpRequest[tokenId] = requestId;
     }
 
+    /// @dev Holder or approved only, unlike `increaseSpot`: a perp deposit
+    /// is a pending request, and while it waits the token can do nothing
+    /// else — open to anyone, a dust deposit every few minutes would keep
+    /// the holder from ever withdrawing.
     function increasePerp(uint256 tokenId, uint256 quoteIn, uint256 minShares, uint256 deadline)
         external
         nonReentrant
         ensure(deadline)
-        returns (uint256 shares)
+        returns (uint256 requestId)
     {
-        Position storage pos = positions[tokenId];
-        _requireOwned(tokenId);
-        if (pos.isSpot) revert WrongPoolKind();
-        shares = _addPerp(pos.pool, quoteIn, minShares);
-        pos.liquidity += shares;
-        emit LiquidityIncreased(tokenId, shares, pos.liquidity);
+        Position storage pos = _authorizedPosition(tokenId, false);
+        _bookPerp(tokenId, pos);
+        requestId = _requestPerpDeposit(pos.pool, quoteIn, minShares);
+        pendingPerpRequest[tokenId] = requestId;
     }
 
+    /// @notice Request a withdrawal of `shares` to `to`. The shares leave the
+    /// token now; if the withdrawal fails they come back to it.
     function decreasePerp(uint256 tokenId, uint256 shares, uint256 minQuoteOut, address to, uint256 deadline)
         external
         nonReentrant
         ensure(deadline)
-        returns (uint256 quoteOut)
+        returns (uint256 requestId)
     {
         Position storage pos = _authorizedPosition(tokenId, false);
+        _bookPerp(tokenId, pos);
         if (shares == 0) revert ZeroAmount();
         if (shares > pos.liquidity) revert InsufficientPositionLiquidity();
         pos.liquidity -= shares;
-        quoteOut = IPerpPool(pos.pool).removeLiquidity(shares, minQuoteOut, to);
+        requestId = IPerpPool(pos.pool).requestWithdraw(shares, minQuoteOut, to, address(this), 0);
+        pendingPerpRequest[tokenId] = requestId;
         emit LiquidityDecreased(tokenId, shares, pos.liquidity);
+    }
+
+    /// @notice Execute the token's pending request if it is still waiting,
+    /// then book its outcome. Anyone may call it. A request past its
+    /// settlement epoch is rolled to a fresh window instead and stays
+    /// pending; call again once that window has closed.
+    function settlePerp(uint256 tokenId) external nonReentrant {
+        Position storage pos = positions[tokenId];
+        _requireOwned(tokenId);
+        if (pos.isSpot) revert WrongPoolKind();
+        uint256 requestId = pendingPerpRequest[tokenId];
+        if (requestId == 0) revert NoPendingRequest();
+        (LpStatus status,,,) = IPerpPool(pos.pool).lpRequestOutcome(requestId);
+        if (status == LpStatus.PENDING) {
+            IPerpPool(pos.pool).executeLp(requestId, [uint256(0), 0, 0]);
+            (status,,,) = IPerpPool(pos.pool).lpRequestOutcome(requestId);
+            if (status == LpStatus.PENDING) return;
+        }
+        _bookPerp(tokenId, pos);
     }
 
     // ------------------------------------------------------------------ burn
@@ -163,7 +200,7 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
     function burn(uint256 tokenId) external {
         address owner = _requireOwned(tokenId);
         if (!_isAuthorized(owner, msg.sender, tokenId)) revert NotAuthorized();
-        if (positions[tokenId].liquidity != 0) revert PositionNotEmpty();
+        if (positions[tokenId].liquidity != 0 || pendingPerpRequest[tokenId] != 0) revert PositionNotEmpty();
         delete positions[tokenId];
         _burn(tokenId);
         emit PositionBurned(tokenId);
@@ -198,11 +235,33 @@ contract DexPositionManager is ERC721, ReentrancyGuard {
         _settle(token1, pool);
     }
 
-    function _addPerp(address pool, uint256 quoteIn, uint256 minShares) internal returns (uint256 shares) {
+    function _requestPerpDeposit(address pool, uint256 quoteIn, uint256 minShares)
+        internal
+        returns (uint256 requestId)
+    {
         address quoteToken = IPerpPool(pool).quoteToken();
         uint256 have = _pullAndApprove(quoteToken, pool, quoteIn);
-        shares = IPerpPool(pool).addLiquidity(have, minShares, address(this));
+        requestId = IPerpPool(pool).requestDeposit(have, minShares, address(this), msg.sender, 0);
         _settle(quoteToken, pool);
+    }
+
+    /// @dev Book a finished request on its token and clear it; revert if it
+    /// is still waiting. Shares minted by a deposit, or returned by a failed
+    /// withdrawal, are the token's. A failed deposit's quote went back to its
+    /// depositor and a withdrawal's to its recipient, so neither books here.
+    function _bookPerp(uint256 tokenId, Position storage pos) internal {
+        uint256 requestId = pendingPerpRequest[tokenId];
+        if (requestId == 0) return;
+        (LpStatus status, bool isDeposit, uint256 amount, uint256 out) = IPerpPool(pos.pool).lpRequestOutcome(requestId);
+        if (status == LpStatus.PENDING) revert RequestPending();
+        delete pendingPerpRequest[tokenId];
+        uint256 booked;
+        if (status == LpStatus.EXECUTED && isDeposit) booked = out;
+        else if (status == LpStatus.REFUNDED && !isDeposit) booked = amount;
+        if (booked > 0) {
+            pos.liquidity += booked;
+            emit LiquidityIncreased(tokenId, booked, pos.liquidity);
+        }
     }
 
     /// @dev Pull `amount` from the caller and approve the pool for whatever

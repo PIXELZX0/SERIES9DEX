@@ -91,29 +91,29 @@ contract PairTest is Test {
 
     function testPlaceSellEscrowsBase() public {
         uint256 balBefore = base.balanceOf(maker);
-        _placeSell(4.5e18, 10 ether);
+        _placeSell(4.5e36, 10 ether);
         assertEq(balBefore - base.balanceOf(maker), 10 ether);
         assertEq(base.balanceOf(address(pair)), 10 ether);
         (uint256 price, uint256 total) = pair.bestAsk();
-        assertEq(price, 4.5e18);
+        assertEq(price, 4.5e36);
         assertEq(total, 10 ether);
     }
 
     function testPlaceBuyEscrowsQuoteCeil() public {
         uint256 balBefore = quote.balanceOf(maker);
-        _placeBuy(3.5e18, 10 ether);
+        _placeBuy(3.5e36, 10 ether);
         assertEq(balBefore - quote.balanceOf(maker), 35 ether);
         (uint256 price, uint256 total) = pair.bestBid();
-        assertEq(price, 3.5e18);
+        assertEq(price, 3.5e36);
         assertEq(total, 10 ether);
     }
 
     function testPlaceOrderValidation() public {
         vm.startPrank(maker);
         vm.expectRevert(Pair.InvalidPrice.selector);
-        pair.placeOrder(IPair.Side.SELL, 4e18 + 1, 1 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.SELL, 4e36 + 1, 1 ether, expiry, 0);
         vm.expectRevert(Pair.InvalidExpiry.selector);
-        pair.placeOrder(IPair.Side.SELL, 4e18, 1 ether, uint64(block.timestamp), 0);
+        pair.placeOrder(IPair.Side.SELL, 4e36, 1 ether, uint64(block.timestamp), 0);
         vm.expectRevert(Pair.NotionalTooSmall.selector);
         pair.placeOrder(IPair.Side.SELL, 1e15, 1e3, expiry, 0);
         vm.stopPrank();
@@ -122,7 +122,7 @@ contract PairTest is Test {
     // ------------------------------------------------------- cancel/expire
 
     function testCancelRefundsExactly() public {
-        uint256 id = _placeSell(4.5e18, 10 ether);
+        uint256 id = _placeSell(4.5e36, 10 ether);
         uint256 balBefore = base.balanceOf(maker);
         vm.prank(maker);
         pair.cancelOrder(id);
@@ -135,14 +135,14 @@ contract PairTest is Test {
     }
 
     function testCancelOnlyMaker() public {
-        uint256 id = _placeSell(4.5e18, 10 ether);
+        uint256 id = _placeSell(4.5e36, 10 ether);
         vm.prank(taker);
         vm.expectRevert(Pair.NotMaker.selector);
         pair.cancelOrder(id);
     }
 
     function testCancelTwiceReverts() public {
-        uint256 id = _placeSell(4.5e18, 10 ether);
+        uint256 id = _placeSell(4.5e36, 10 ether);
         vm.startPrank(maker);
         pair.cancelOrder(id);
         vm.expectRevert(Pair.OrderNotOpen.selector);
@@ -151,7 +151,7 @@ contract PairTest is Test {
     }
 
     function testRemoveExpired() public {
-        uint256 id = _placeBuy(3.5e18, 10 ether);
+        uint256 id = _placeBuy(3.5e36, 10 ether);
         vm.prank(taker);
         vm.expectRevert(Pair.OrderNotExpired.selector);
         pair.removeExpired(id);
@@ -167,40 +167,40 @@ contract PairTest is Test {
     // ------------------------------------------------------------- levels
 
     function testLevelOrdering() public {
-        _placeSell(4.6e18, 1 ether);
-        _placeSell(4.4e18, 1 ether);
-        _placeSell(4.5e18, 1 ether);
+        _placeSell(4.6e36, 1 ether);
+        _placeSell(4.4e36, 1 ether);
+        _placeSell(4.5e36, 1 ether);
         (uint256 bestAskPrice,) = pair.bestAsk();
-        assertEq(bestAskPrice, 4.4e18);
-        (,, uint256 next) = pair.levelOf(IPair.Side.SELL, 4.4e18);
-        assertEq(next, 4.5e18);
-        (,, next) = pair.levelOf(IPair.Side.SELL, 4.5e18);
-        assertEq(next, 4.6e18);
+        assertEq(bestAskPrice, 4.4e36);
+        (,, uint256 next) = pair.levelOf(IPair.Side.SELL, 4.4e36);
+        assertEq(next, 4.5e36);
+        (,, next) = pair.levelOf(IPair.Side.SELL, 4.5e36);
+        assertEq(next, 4.6e36);
 
-        _placeBuy(3.4e18, 1 ether);
-        _placeBuy(3.6e18, 1 ether);
+        _placeBuy(3.4e36, 1 ether);
+        _placeBuy(3.6e36, 1 ether);
         (uint256 bestBidPrice,) = pair.bestBid();
-        assertEq(bestBidPrice, 3.6e18);
-        (,, next) = pair.levelOf(IPair.Side.BUY, 3.6e18);
-        assertEq(next, 3.4e18);
+        assertEq(bestBidPrice, 3.6e36);
+        (,, next) = pair.levelOf(IPair.Side.BUY, 3.6e36);
+        assertEq(next, 3.4e36);
     }
 
     function testLevelInsertWithHint() public {
-        _placeSell(4.4e18, 1 ether);
-        _placeSell(4.8e18, 1 ether);
+        _placeSell(4.4e36, 1 ether);
+        _placeSell(4.8e36, 1 ether);
         vm.prank(maker);
-        pair.placeOrder(IPair.Side.SELL, 4.6e18, 1 ether, expiry, 4.4e18);
-        (,, uint256 next) = pair.levelOf(IPair.Side.SELL, 4.4e18);
-        assertEq(next, 4.6e18);
+        pair.placeOrder(IPair.Side.SELL, 4.6e36, 1 ether, expiry, 4.4e36);
+        (,, uint256 next) = pair.levelOf(IPair.Side.SELL, 4.4e36);
+        assertEq(next, 4.6e36);
     }
 
     // ------------------------------------------------------------ matching
 
     function testMatchSellFullFill() public {
-        // Pool price 4.0 with fee => marginal bid ~3.988. Sell limit 3.9 is crossable.
-        uint256 id = _placeSell(3.9e18, 1 ether);
+        // Pool price 4.0 with fee => marginal bid ~3.988. Sell limit 3.9 is
+        // crossable, so it fills as it is placed.
         uint256 quoteBefore = quote.balanceOf(maker);
-        pair.matchOrders(10);
+        uint256 id = _placeSell(3.9e36, 1 ether);
         (IPair.Status status,, uint256 escrow) = _order(id);
         assertEq(uint8(status), uint8(IPair.Status.FILLED));
         assertEq(escrow, 0);
@@ -211,9 +211,8 @@ contract PairTest is Test {
 
     function testMatchSellPartialFillLandsAtLimit() public {
         // Big order: pool can only absorb ~0.96 base before hitting 3.95.
-        uint256 id = _placeSell(3.95e18, 50 ether);
         uint256 quoteBefore = quote.balanceOf(maker);
-        pair.matchOrders(10);
+        uint256 id = _placeSell(3.95e36, 50 ether);
         (IPair.Status status, uint256 filled, uint256 escrow) = _order(id);
         assertEq(uint8(status), uint8(IPair.Status.OPEN));
         assertGt(filled, 0.9 ether);
@@ -221,7 +220,7 @@ contract PairTest is Test {
         assertEq(escrow, 50 ether - filled);
         // Average execution price >= limit.
         uint256 received = quote.balanceOf(maker) - quoteBefore;
-        assertGe(received * 1e18, filled * 3.95e18);
+        assertGe(received * 1e36, filled * 3.95e36);
         // Second match is a no-op: the single pool sits exactly at the limit.
         pair.matchOrders(10);
         (, uint256 filledAfter,) = _order(id);
@@ -232,8 +231,7 @@ contract PairTest is Test {
         // Pool ask with fee ~4.012 < 4.1 limit => crossable.
         uint256 baseBefore = base.balanceOf(maker);
         uint256 quoteBefore = quote.balanceOf(maker);
-        uint256 id = _placeBuy(4.1e18, 1 ether);
-        pair.matchOrders(10);
+        uint256 id = _placeBuy(4.1e36, 1 ether);
         (IPair.Status status,, uint256 escrow) = _order(id);
         assertEq(uint8(status), uint8(IPair.Status.FILLED));
         assertEq(escrow, 0);
@@ -246,8 +244,8 @@ contract PairTest is Test {
     }
 
     function testMatchNotCrossableNoop() public {
-        uint256 sellId = _placeSell(4.5e18, 1 ether); // above pool bid
-        uint256 buyId = _placeBuy(3.5e18, 1 ether); // below pool ask
+        uint256 sellId = _placeSell(4.5e36, 1 ether); // above pool bid
+        uint256 buyId = _placeBuy(3.5e36, 1 ether); // below pool ask
         pair.matchOrders(10);
         (IPair.Status s1,,) = _order(sellId);
         (IPair.Status s2,,) = _order(buyId);
@@ -256,20 +254,35 @@ contract PairTest is Test {
     }
 
     function testMatchFifoWithinLevel() public {
-        uint256 first = _placeSell(3.9e18, 0.3 ether);
+        // The first order takes all the room the pool has at 3.95 and rests
+        // with the rest; the second finds none and queues behind it.
+        uint256 first = _placeSell(3.95e36, 5 ether);
         vm.prank(taker);
-        uint256 second = pair.placeOrder(IPair.Side.SELL, 3.9e18, 0.3 ether, expiry, 0);
-        pair.matchOrders(1); // only one fill allowed
-        (IPair.Status s1,,) = _order(first);
-        (IPair.Status s2,,) = _order(second);
-        assertEq(uint8(s1), uint8(IPair.Status.FILLED));
-        assertEq(uint8(s2), uint8(IPair.Status.OPEN));
+        uint256 second = pair.placeOrder(IPair.Side.SELL, 3.95e36, 5 ether, expiry, 0);
+        (, uint256 firstFilled,) = _order(first);
+        (, uint256 secondFilled,) = _order(second);
+        assertGt(firstFilled, 0);
+        assertEq(secondFilled, 0);
+
+        // The pool sits below 3.95 at the margin after averaging down to it;
+        // a buy that lifts it past the limit reopens some room, and that room
+        // goes to the head of the queue.
+        vm.prank(lp);
+        pool.swapExactIn(address(quote), 10 ether, 0, lp);
+        (, uint256 firstAfter,) = _order(first);
+        (, uint256 secondAfter,) = _order(second);
+        assertGt(firstAfter, firstFilled);
+        assertEq(secondAfter, 0);
     }
 
     function testMatchSkipsExpiredAndRefunds() public {
-        uint256 id = _placeSell(3.9e18, 1 ether);
+        uint256 id = _placeSell(4.5e36, 1 ether); // rests: above the pool
         vm.warp(expiry);
         uint256 balBefore = base.balanceOf(maker);
+        // The pool moves past it after it expired; the swap's own match
+        // meets the dead order first and sends the escrow home.
+        vm.prank(lp);
+        pool.swapExactIn(address(quote), 100 ether, 0, lp);
         pair.matchOrders(10);
         (IPair.Status status,,) = _order(id);
         assertEq(uint8(status), uint8(IPair.Status.EXPIRED));
@@ -285,7 +298,7 @@ contract PairTest is Test {
 
     function testSwapAutoFillsCrossedOrder() public {
         // Not crossable at pool price 4.0 (bid w/ fee ~3.988).
-        uint256 id = _placeSell(4.05e18, 0.5 ether);
+        uint256 id = _placeSell(4.05e36, 0.5 ether);
         (IPair.Status statusBefore,,) = _order(id);
         assertEq(uint8(statusBefore), uint8(IPair.Status.OPEN));
 
@@ -317,7 +330,7 @@ contract PairTest is Test {
         (uint256 r0Before1,,) = pool.getReserves();
         (uint256 r0Before2,,) = pool2.getReserves();
 
-        uint256 id = _placeSell(3.95e18, 50 ether);
+        uint256 id = _placeSell(3.95e36, 50 ether);
         pair.matchOrders(10);
 
         (uint256 r0After1,,) = pool.getReserves();
@@ -344,7 +357,7 @@ contract PairTest is Test {
         (, uint256 r1Before1,) = pool.getReserves();
         (, uint256 r1Before2,) = pool2.getReserves();
 
-        _placeBuy(4.05e18, 50 ether);
+        _placeBuy(4.05e36, 50 ether);
         pair.matchOrders(10);
 
         (, uint256 r1After1,) = pool.getReserves();
@@ -356,10 +369,10 @@ contract PairTest is Test {
     // ------------------------------------------------------------- solvency
 
     function testEscrowSolvencyAfterMixedActivity() public {
-        _placeSell(3.9e18, 2 ether);
-        _placeSell(4.2e18, 3 ether);
-        _placeBuy(4.1e18, 1 ether);
-        uint256 farBuy = _placeBuy(3.3e18, 2 ether); // never crossable here
+        _placeSell(3.9e36, 2 ether);
+        _placeSell(4.2e36, 3 ether);
+        _placeBuy(4.1e36, 1 ether);
+        uint256 farBuy = _placeBuy(3.3e36, 2 ether); // never crossable here
         pair.matchOrders(10);
         vm.prank(maker);
         pair.cancelOrder(farBuy);
@@ -381,102 +394,126 @@ contract PairTest is Test {
     // ------------------------------------------------------- price grid
 
     function testPriceGridAcceptsSixSignificantDigits() public view {
-        assertTrue(pair.priceIsValid(4.5e18));
-        assertTrue(pair.priceIsValid(123456e12)); // 1.23456 at X18
-        assertTrue(pair.priceIsValid(10)); // tiny-scale pair, every integer legal
+        assertTrue(pair.priceIsValid(4.5e36));
+        assertTrue(pair.priceIsValid(123456e31)); // 1.23456 at X36
+        assertTrue(pair.priceIsValid(123456e14)); // 1.23456e-17 raw: an 18-dec meme coin vs a 6-dec stable
         assertTrue(pair.priceIsValid(999999));
         assertFalse(pair.priceIsValid(0));
-        assertFalse(pair.priceIsValid(4.5e18 + 1));
-        assertFalse(pair.priceIsValid(1234567e12)); // seven digits
+        assertFalse(pair.priceIsValid(4.5e36 + 1));
+        assertFalse(pair.priceIsValid(1234567e30)); // seven digits
+        // In range up to MAX_PRICE_X36 and not beyond, whatever the digits.
+        assertTrue(pair.priceIsValid(pair.MAX_PRICE_X36()));
+        assertFalse(pair.priceIsValid(2e72));
     }
 
     function testTickSizeAtTracksMagnitude() public view {
-        assertEq(pair.tickSizeAt(4.5e18), 1e13);
+        assertEq(pair.tickSizeAt(4.5e36), 1e31);
         assertEq(pair.tickSizeAt(999999), 1);
-        assertEq(pair.tickSizeAt(1e21), 1e16);
+        assertEq(pair.tickSizeAt(1e39), 1e34);
     }
 
     function testOffGridPriceRejected() public {
         vm.prank(maker);
         vm.expectRevert(Pair.InvalidPrice.selector);
-        pair.placeOrder(IPair.Side.SELL, 4.5e18 + 1, 10 ether, expiry, 0);
+        pair.placeOrder(IPair.Side.SELL, 4.5e36 + 1, 10 ether, expiry, 0);
     }
 
     // --------------------------------------------------- dead-node budget
 
-    /// Cancelled FIFO nodes must be charged against `maxFills`. Without that,
-    /// a level stuffed behind one live order makes every later match walk all
-    /// of them for free, and past ~30k nodes no call can ever finish.
-    function testDeadNodesConsumeFillBudget() public {
-        uint256 price = 4.5e18;
-        uint256[] memory dead = new uint256[](5);
-        for (uint256 i = 0; i < 5; i++) {
+    /// Cancelled FIFO nodes are popped out of a budget of their own, still
+    /// bounded: one match pops at most `maxFills * POPS_PER_FILL` of them.
+    /// Unbounded, a level stuffed behind one live order would make every
+    /// later match walk all of them, and past ~30k nodes no call could finish.
+    function testDeadNodesArePoppedWithinTheirOwnBudget() public {
+        uint256 price = 4.5e36;
+        uint256 n = pool.MAX_AUTO_FILLS() * pair.POPS_PER_FILL() + 3;
+        uint256[] memory dead = new uint256[](n);
+        for (uint256 i = 0; i < n; i++) {
             dead[i] = _placeSell(price, 1 ether);
         }
         // Live order at the tail keeps totalBase > 0, so the level survives
         // the cancels and the dead nodes stay queued in front of it.
         uint256 live = _placeSell(price, 10 ether);
-        for (uint256 i = 0; i < 5; i++) {
+        for (uint256 i = 0; i < n; i++) {
             vm.prank(maker);
             pair.cancelOrder(dead[i]);
         }
 
-        // Cross the level, which also runs the swap's own auto-match with a
-        // budget of MAX_AUTO_FILLS (5) — exactly the five dead nodes.
+        // Cross the level. The swap's own auto-match (MAX_AUTO_FILLS) may pop
+        // only 40 of the 43 dead nodes.
         vm.prank(lp);
         pool.swapExactIn(address(quote), 50 ether, 0, lp);
         (uint256 ask,) = pair.bestAsk();
         assertEq(ask, price);
         (, uint256 filled,) = _order(live);
-        assertEq(filled, 0, "budget went to pops, not to the live order");
+        assertEq(filled, 0, "pop budget ran out before the live order");
 
-        // The backlog is gone for good, so the next unit of budget reaches
-        // the live order instead of re-walking the dead ones.
+        // The backlog that was popped is gone for good; the next call clears
+        // the rest and reaches the live order.
         pair.matchOrders(1);
         (, filled,) = _order(live);
         assertGt(filled, 0);
     }
 
+    /// Pops no longer cost fills, so a stuffed opposite level cannot use up
+    /// a new order's placement budget and leave it resting while marketable.
+    function testStuffedLevelCannotStallANewOrder() public {
+        uint256 n = pair.PLACE_MATCH_FILLS() + 4; // enough to starve the old shared budget
+        uint256[] memory dead = new uint256[](n);
+        for (uint256 i = 0; i < n; i++) {
+            dead[i] = _placeSell(4.5e36, 1 ether);
+        }
+        _placeSell(4.5e36, 10 ether);
+        for (uint256 i = 0; i < n; i++) {
+            vm.prank(maker);
+            pair.cancelOrder(dead[i]);
+        }
+
+        vm.prank(taker);
+        uint256 bid = pair.placeOrder(IPair.Side.BUY, 4.1e36, 1 ether, expiry, 0);
+        (IPair.Status status,,) = _order(bid);
+        assertEq(uint8(status), uint8(IPair.Status.FILLED), "filled from the pool as placed");
+    }
+
     // -------------------------------------------------------------- views
 
-    function testOrdersOfPaginates() public {
-        uint256 a = _placeSell(4.5e18, 10 ether);
-        uint256 b = _placeSell(4.6e18, 10 ether);
-        uint256 c = _placeBuy(3.5e18, 10 ether);
+    function testOrderIdsOfPaginates() public {
+        uint256 a = _placeSell(4.5e36, 10 ether);
+        uint256 b = _placeSell(4.6e36, 10 ether);
+        uint256 c = _placeBuy(3.5e36, 10 ether);
         assertEq(pair.ordersOfLength(maker), 3);
 
-        (uint256[] memory ids, Pair.Order[] memory page) = pair.ordersOf(maker, 0, 2);
+        uint256[] memory ids = pair.orderIdsOf(maker, 0, 2);
         assertEq(ids.length, 2);
         assertEq(ids[0], a);
         assertEq(ids[1], b);
-        assertEq(page[0].priceX18, 4.5e18);
-        assertEq(uint8(page[1].side), uint8(IPair.Side.SELL));
+        (,,,, uint256 price,,,,) = pair.orders(ids[0]);
+        assertEq(price, 4.5e36);
 
-        (ids, page) = pair.ordersOf(maker, 2, 10);
+        ids = pair.orderIdsOf(maker, 2, 10);
         assertEq(ids.length, 1);
         assertEq(ids[0], c);
-        assertEq(uint8(page[0].side), uint8(IPair.Side.BUY));
+        (, IPair.Side side,,,,,,,) = pair.orders(ids[0]);
+        assertEq(uint8(side), uint8(IPair.Side.BUY));
 
-        (ids, page) = pair.ordersOf(maker, 99, 10);
-        assertEq(ids.length, 0);
-        assertEq(page.length, 0);
+        assertEq(pair.orderIdsOf(maker, 99, 10).length, 0);
     }
 
     function testLevelsWalkBookOutward() public {
-        _placeSell(4.5e18, 1 ether);
-        _placeSell(4.7e18, 2 ether);
-        _placeSell(4.6e18, 3 ether);
+        _placeSell(4.5e36, 1 ether);
+        _placeSell(4.7e36, 2 ether);
+        _placeSell(4.6e36, 3 ether);
 
         (uint256[] memory prices, uint256[] memory totals, uint256 cursor) = pair.levels(IPair.Side.SELL, 0, 2);
         assertEq(prices.length, 2);
-        assertEq(prices[0], 4.5e18); // best ask first
-        assertEq(prices[1], 4.6e18);
+        assertEq(prices[0], 4.5e36); // best ask first
+        assertEq(prices[1], 4.6e36);
         assertEq(totals[1], 3 ether);
-        assertEq(cursor, 4.7e18);
+        assertEq(cursor, 4.7e36);
 
         (prices, totals, cursor) = pair.levels(IPair.Side.SELL, cursor, 10);
         assertEq(prices.length, 1);
-        assertEq(prices[0], 4.7e18);
+        assertEq(prices[0], 4.7e36);
         assertEq(totals[0], 2 ether);
         assertEq(cursor, 0); // side exhausted
     }
@@ -488,18 +525,19 @@ contract PairTest is Test {
     }
 
     function testAstronomicalAskDoesNotFreezeMatching() public {
-        // 1 wei of base at a one-digit price is on the grid and clears the
+        // 1 wei of base at the highest price the grid allows clears the
         // notional floor. As the only ask it is the best ask, and pool sizing
         // used to cross-multiply it straight into an overflow, reverting
         // every match — bids included — for as long as it stood.
         address griefer = makeAddr("griefer");
         base.mint(griefer, 1);
+        uint256 maxPrice = pair.MAX_PRICE_X36();
         vm.startPrank(griefer);
         base.approve(address(pair), 1);
-        uint256 askId = pair.placeOrder(IPair.Side.SELL, 1e70, 1, uint64(block.timestamp + 365 days), 0);
+        uint256 askId = pair.placeOrder(IPair.Side.SELL, maxPrice, 1, uint64(block.timestamp + 365 days), 0);
         vm.stopPrank();
 
-        uint256 bidId = _placeBuy(5e18, 1 ether); // pool sits at 4.0
+        uint256 bidId = _placeBuy(5e36, 1 ether); // pool sits at 4.0
         pair.matchOrders(10);
 
         (IPair.Status bidStatus,,) = _order(bidId);

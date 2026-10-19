@@ -68,11 +68,11 @@ contract PairGriefTest is Test {
         tokenB.approve(address(pool), type(uint256).max);
         tokenA.approve(address(pair), type(uint256).max);
         pool.addLiquidity(100 ether, 400 ether, 0, 0, victim);
-        pair.placeOrder(IPair.Side.SELL, 4.5e18, 10 ether, uint64(block.timestamp + 1 days), 0);
+        pair.placeOrder(IPair.Side.SELL, 4.5e36, 10 ether, uint64(block.timestamp + 1 days), 0);
         vm.stopPrank();
 
         (uint256 ask, uint256 total) = pair.bestAsk();
-        assertEq(ask, 4.5e18);
+        assertEq(ask, 4.5e36);
         assertEq(total, 10 ether);
     }
 
@@ -108,11 +108,11 @@ contract PairGriefTest is Test {
         tokenB.approve(address(pool), type(uint256).max);
         tokenA.approve(address(pair), type(uint256).max);
         pool.addLiquidity(100 ether, 400 ether, 0, 0, victim);
-        // Adjacent grid steps both work: at this magnitude the tick is 1e13,
+        // Adjacent grid steps both work: at this magnitude the tick is 1e31,
         // i.e. six significant digits, roughly 0.02bp of a price near 4.5.
-        assertEq(pair.tickSizeAt(4.5e18), 1e13);
-        pair.placeOrder(IPair.Side.SELL, 4.5e18, 10 ether, uint64(block.timestamp + 1 days), 0);
-        pair.placeOrder(IPair.Side.SELL, 4.50001e18, 10 ether, uint64(block.timestamp + 1 days), 0);
+        assertEq(pair.tickSizeAt(4.5e36), 1e31);
+        pair.placeOrder(IPair.Side.SELL, 4.5e36, 10 ether, uint64(block.timestamp + 1 days), 0);
+        pair.placeOrder(IPair.Side.SELL, 4.50001e36, 10 ether, uint64(block.timestamp + 1 days), 0);
         vm.stopPrank();
         assertEq(pair.nextOrderId(), 3);
     }

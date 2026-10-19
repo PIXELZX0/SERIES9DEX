@@ -224,13 +224,139 @@ contract SpotPoolTest is Test {
     // ------------------------------------------------------------------ TWAP
 
     function testTwapAccumulates() public {
-        _addLiquidity(alice, 100 ether, 400 ether); // price0 = 4e18
+        _addLiquidity(alice, 100 ether, 400 ether); // price0 = 4e36
         uint256 cumBefore = pool.price0CumulativeLast();
         vm.warp(block.timestamp + 100);
         vm.prank(bob);
         pool.swapExactIn(address(token0), 1 ether, 0, bob);
         uint256 cumAfter = pool.price0CumulativeLast();
-        assertEq(cumAfter - cumBefore, 4e18 * 100);
+        assertEq(cumAfter - cumBefore, 4e36 * 100);
+    }
+
+    /// At 1e18 a raw price of 1e-17 (18-decimal base at $0.00001 against a
+    /// 6-decimal quote) read as 10 and an 8% move vanished; 1e36 keeps it.
+    function testPriceKeepsResolutionAtTinyRawPrices() public {
+        token0.mint(alice, 1e30);
+        _addLiquidity(alice, 1e30, 1e13);
+        uint256 before = pool.spotPriceX36();
+        assertEq(before, 1e19);
+        vm.prank(bob);
+        pool.swapExactIn(address(token1), 4e11, 0, bob);
+        uint256 afterMove = pool.spotPriceX36();
+        assertApproxEqRel(afterMove, before * 108 / 100, 5e15);
+    }
+
+    /// Reserves stay inside uint112 so `reserve * 1e36` in the accumulators
+    /// can never wrap silently.
+    function testReservesCappedAtUint112() public {
+        uint256 big = uint256(type(uint112).max) + 1;
+        token0.mint(alice, big);
+        token1.mint(alice, big);
+        vm.prank(alice);
+        vm.expectRevert(SpotPool.ReserveOverflow.selector);
+        pool.addLiquidity(big, 1 ether, 0, 0, alice);
+    }
+
+    // ------------------------------------------------------------- rounding
+
+    /// The fee rounds up, so a trade too small to owe a whole unit of
+    /// protocol fee still owes one: a 999-wei swap on a 0.3% pool used to
+    /// pay the treasury nothing.
+    function testFeesRoundUp() public {
+        _addLiquidity(alice, 100 ether, 400 ether);
+        vm.prank(bob);
+        pool.swapExactIn(address(token0), 999, 0, bob);
+        assertEq(pool.protocolFees0(), 1);
+    }
+
+    function testFuzzGetAmountInIsExactMinimum(uint256 amountOut) public {
+        _addLiquidity(alice, 1000 ether, 4000 ether);
+        amountOut = bound(amountOut, 1, 3999 ether);
+        uint256 amountIn = pool.getAmountIn(address(token0), amountOut);
+        assertGe(pool.getAmountOut(address(token0), amountIn), amountOut);
+        if (amountIn > 1) assertLt(pool.getAmountOut(address(token0), amountIn - 1), amountOut);
+    }
+
+    // ---------------------------------------------------------------- oracle
+
+    function _enableOracle() internal {
+        vm.prank(address(mockPair));
+        pool.enableOracle();
+    }
+
+    function testEnableOracleOnlyPair() public {
+        vm.prank(bob);
+        vm.expectRevert(SpotPool.OnlyPair.selector);
+        pool.enableOracle();
+        _enableOracle();
+        assertTrue(pool.oracleEnabled());
+    }
+
+    /// The cumulative at a boundary is what the live accumulator would have
+    /// read at that instant, however the pool traded before and after it.
+    function testObserveReproducesTheAccumulatorAtBoundaries() public {
+        _enableOracle();
+        vm.warp(1_000_020);
+        _addLiquidity(alice, 100 ether, 400 ether); // 4.0 from t=1_000_020
+        uint256 e = pool.ORACLE_EPOCH();
+        uint256 epoch1 = 1_000_020 / e + 1; // first boundary after seeding
+
+        // A boundary nothing has happened since: live state answers.
+        vm.warp(epoch1 * e + 7);
+        (uint256 c0,,,,) = pool.observe(epoch1, 0);
+        assertEq(c0, 4e36 * (epoch1 * e - 1_000_020));
+
+        // Trade after it; the boundary is now answered from the record.
+        vm.prank(bob);
+        pool.swapExactIn(address(token1), 40 ether, 0, bob);
+        (uint256 c0Again,,,,) = pool.observe(epoch1, 0);
+        assertEq(c0Again, c0, "boundary value must not change once recorded");
+
+        // And the next boundary prices the new reserves from the swap on.
+        uint256 newPrice = pool.spotPriceX36();
+        vm.warp((epoch1 + 1) * e + 3);
+        vm.prank(bob);
+        pool.swapExactIn(address(token0), 1 ether, 0, bob);
+        (uint256 c0Next,,,,) = pool.observe(epoch1 + 1, 0);
+        assertEq(c0Next, c0 + 4e36 * 7 + newPrice * (e - 7));
+    }
+
+    /// After a long idle stretch the covering record is far from the
+    /// boundary: the walk asks for a hint, a wrong hint is refused, the right
+    /// one is accepted.
+    function testObserveAfterIdleGapTakesAHint() public {
+        _enableOracle();
+        vm.warp(2_000_010);
+        _addLiquidity(alice, 100 ether, 400 ether);
+        uint256 e = pool.ORACLE_EPOCH();
+        uint256 boundary = 2_000_010 / e + 1;
+        uint256 later = boundary + pool.MAX_OBSERVATION_PROBES() + 5;
+        vm.warp(later * e + 1);
+        vm.prank(bob);
+        pool.swapExactIn(address(token1), 1 ether, 0, bob); // records at `later`
+
+        vm.expectRevert(SpotPool.ObservationHintRequired.selector);
+        pool.observe(boundary, 0);
+        vm.expectRevert(SpotPool.InvalidObservationHint.selector);
+        pool.observe(boundary, later - 1);
+        (uint256 c0,,,,) = pool.observe(boundary, later);
+        assertEq(c0, 4e36 * (boundary * e - 2_000_010));
+    }
+
+    /// Before the pool had liquidity there is no price to report, and that
+    /// never changes.
+    function testObserveBeforeSeedingIsUnavailable() public {
+        _enableOracle();
+        vm.warp(3_000_000);
+        uint256 e = pool.ORACLE_EPOCH();
+        vm.expectRevert(SpotPool.ObservationUnavailable.selector);
+        pool.observe(3_000_000 / e, 0);
+        _addLiquidity(alice, 100 ether, 400 ether);
+        vm.warp(3_000_000 + 10 * e);
+        vm.prank(bob);
+        pool.swapExactIn(address(token1), 1 ether, 0, bob);
+        vm.expectRevert(SpotPool.ObservationUnavailable.selector);
+        pool.observe(3_000_000 / e - 1, 0);
     }
 
     // -------------------------------------------------------- fee-on-transfer

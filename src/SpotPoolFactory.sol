@@ -7,7 +7,8 @@ import {IDexRegistry} from "./interfaces/IDexRegistry.sol";
 /// @notice Deploys SpotPool bytecode on behalf of a Pair. Keeps pool
 /// creation code out of the upgradeable registry (24KB limit + upgrade
 /// safety). The registry can be repointed to a new factory to evolve pool
-/// code; already-deployed pools stay immutable.
+/// code, but only pairs created afterwards use it: each Pair keeps the
+/// factory it was deployed with. Deployed pools stay immutable.
 contract SpotPoolFactory {
     address public immutable registry;
 

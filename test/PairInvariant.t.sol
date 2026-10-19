@@ -44,13 +44,12 @@ contract PairHandler is Test {
         // Straddles the pools' 4.0 price, so both sides overlap constantly:
         // this is what drives crossed books into direct `_fillPair` matching
         // and makes the book compete with the pools on price.
-        price = bound(price, 1e18, 10e18);
-        price = price - (price % 1e15); // keep inside the significant-digit grid
-        if (price == 0) price = 1e15;
+        price = bound(price, 1e36, 10e36);
+        price = price - (price % 1e33); // keep inside the significant-digit grid
         amount = bound(amount, 0.01 ether, 100 ether);
         ttl = bound(ttl, 60, 30 days);
         MockERC20 token = sell ? base : quote;
-        token.mint(address(this), amount * price / 1e18 + amount + 1 ether);
+        token.mint(address(this), amount * price / 1e36 + amount + 1 ether);
         try pair.placeOrder(
             sell ? IPair.Side.SELL : IPair.Side.BUY, price, amount, uint64(block.timestamp + ttl), 0
         ) returns (
@@ -127,7 +126,8 @@ contract PairInvariantTest is Test {
         targetContract(address(handler));
     }
 
-    /// The pair holds exactly the sum of open-order escrows, per token.
+    /// The pair holds exactly the sum of open-order escrows plus whatever is
+    /// waiting to be claimed, per token.
     function invariant_escrowSolvencyExact() public view {
         uint256 sumBase;
         uint256 sumQuote;
@@ -140,8 +140,8 @@ contract PairInvariantTest is Test {
                 assertEq(escrow, 0);
             }
         }
-        assertEq(base.balanceOf(address(pair)), sumBase);
-        assertEq(quote.balanceOf(address(pair)), sumQuote);
+        assertEq(base.balanceOf(address(pair)), sumBase + pair.totalClaimable(address(base)));
+        assertEq(quote.balanceOf(address(pair)), sumQuote + pair.totalClaimable(address(quote)));
     }
 
     /// Best pointers always reference active levels with liquidity, sorted.

@@ -27,6 +27,6 @@ interface IPair {
     /// @notice Permissionless keeper entry point.
     function matchOrders(uint256 maxFills) external;
 
-    function bestBid() external view returns (uint256 priceX18, uint256 totalBase);
-    function bestAsk() external view returns (uint256 priceX18, uint256 totalBase);
+    function bestBid() external view returns (uint256 priceX36, uint256 totalBase);
+    function bestAsk() external view returns (uint256 priceX36, uint256 totalBase);
 }

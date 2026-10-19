@@ -36,3 +36,20 @@ contract MockFeeOnTransferERC20 is MockERC20 {
         super._update(from, to, value);
     }
 }
+
+/// @notice Refuses transfers to blocked addresses, the way USDC and USDT
+/// treat sanctioned ones.
+contract MockBlocklistERC20 is MockERC20 {
+    mapping(address => bool) public blocked;
+
+    constructor(uint8 decimals_) MockERC20("Blocklist", "BLK", decimals_) {}
+
+    function setBlocked(address account, bool value) external {
+        blocked[account] = value;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        require(!blocked[to], "blocked");
+        super._update(from, to, value);
+    }
+}

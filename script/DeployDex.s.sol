@@ -12,14 +12,19 @@ import {PerpPoolFactory} from "../src/PerpPoolFactory.sol";
 import {DexPositionManager} from "../src/DexPositionManager.sol";
 import {DexRouter} from "../src/DexRouter.sol";
 
-/// @notice Deploys the Series9DEX stack with a Safe multisig as the final owner.
+/// @notice Deploys the Series9DEX stack. Final authority (DEX.md §10):
+///   - TimelockController (Safe proposes, guardian cancels, anyone executes
+///     after the delay) owns the treasury and the registry — withdrawals,
+///     upgrades and factory changes all wait out the delay;
+///   - the Safe is the registry's emergency admin (unpause, set guardian);
+///   - the guardian can pause and cancel queued timelock operations.
 ///
 /// Flow:
-///   1. ProtocolTreasury proxy (Safe as owner from the start)
+///   1. TimelockController, then the ProtocolTreasury proxy it owns
 ///   2. DexRegistry proxy (deployer as temporary owner for wiring)
 ///   3. Pool factories (immutable, take the registry proxy address)
-///   4. Wire factories into the registry
-///   5. Transfer registry ownership to the Safe
+///   4. Wire factories and roles into the registry
+///   5. Transfer registry ownership to the timelock
 ///
 /// Pairs (each a CREATE2-deployed `Pair` contract) and pools are not created
 /// here — they're created later at runtime via `DexRegistry.createPair` and
@@ -35,23 +40,26 @@ contract DeployDex is Script {
         // Optional. The guardian can pause and nothing else; leaving it unset
         // means only the Safe can, which is slower in an incident.
         address guardian = vm.envOr("GUARDIAN_ADDRESS", address(0));
-        // Fee withdrawals are never urgent, so a delay in front of them costs
-        // almost nothing and turns a key compromise from an instant drain into
-        // something observable and cancellable. The timelock can change this
-        // later, through itself.
+        // Fee withdrawals, upgrades and factory changes are never urgent, so a
+        // delay in front of them costs almost nothing and turns a key
+        // compromise from an instant drain into something observable and
+        // cancellable. The timelock can change this later, through itself.
         uint256 timelockDelay = vm.envOr("TREASURY_TIMELOCK_DELAY", uint256(48 hours));
         address deployer = vm.addr(deployerPrivateKey);
 
         require(safeAddress != address(0), "SAFE_ADDRESS required");
         require(safeAddress != deployer, "SAFE_ADDRESS must differ from deployer");
+        // The delay is what turns a key compromise into something observable;
+        // on mainnet it may not be configured away.
+        require(block.chainid != 143 || timelockDelay >= 1 days, "TREASURY_TIMELOCK_DELAY under a day on mainnet");
 
         console.log("Deployer (temporary):", deployer);
-        console.log("Safe Owner (permanent):", safeAddress);
-        console.log("Guardian (pause-only):", guardian);
+        console.log("Safe (timelock proposer, registry emergency admin):", safeAddress);
+        console.log("Guardian (pause + timelock cancel):", guardian);
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // --- Treasury timelock ---
+        // --- Timelock (treasury and registry owner) ---
         // Proposer is the Safe. Execution is open (`address(0)` in executors),
         // so once the delay has run anyone can push the transaction through and
         // the Safe cannot be censored out of its own funds.
@@ -103,14 +111,15 @@ contract DeployDex is Script {
         // --- Wire, then hand over ---
         registry.setFactories(address(spotPoolFactory), address(perpPoolFactory));
         if (guardian != address(0)) registry.setGuardian(guardian);
-        registry.transferOwnership(safeAddress);
+        registry.setEmergencyAdmin(safeAddress);
+        registry.transferOwnership(address(treasuryTimelock));
 
         vm.stopBroadcast();
 
         console.log("\n=== Deployed Addresses ===");
         console.log("ProtocolTreasury Implementation:", address(treasuryImplementation));
         console.log("ProtocolTreasury Proxy:", address(treasury));
-        console.log("Treasury Timelock:", address(treasuryTimelock));
+        console.log("Timelock (treasury + registry owner):", address(treasuryTimelock));
         console.log("  delay (seconds):", timelockDelay);
         console.log("DexRegistry Implementation:", address(registryImplementation));
         console.log("DexRegistry Proxy:", address(registry));
