@@ -8,36 +8,54 @@ Series9 탈중앙화 거래소. ANY/ANY ERC-20 페어에 대한 AMM 현물 풀, 
 
 | 컨트랙트 | 파일 | 역할 |
 |----------|------|------|
-| `DexRegistry` | [`src/DexRegistry.sol`](src/DexRegistry.sol) | 페어 등록·조회, 팩토리 배선 (UUPS) |
+| `DexRegistry` | [`src/DexRegistry.sol`](src/DexRegistry.sol) | 페어 등록·조회, 팩토리 배선, 비상 정지 (UUPS, 타임락 소유) |
 | `Pair` | [`src/Pair.sol`](src/Pair.sol) | 페어당 1개. 풀 생성 + 온체인 지정가 오더북 |
 | `SpotPool` | [`src/SpotPool.sol`](src/SpotPool.sol) | AMM 현물 풀, LP 지분 원장 |
 | `SpotPoolFactory` | [`src/SpotPoolFactory.sol`](src/SpotPoolFactory.sol) | 현물 풀 배포 |
-| `PerpPool` | [`src/PerpPool.sol`](src/PerpPool.sol) | 선물 포지션/담보 |
+| `PerpPool` | [`src/PerpPool.sol`](src/PerpPool.sol) | 선물 포지션/담보, 요청→정산 2단계 |
 | `PerpPoolFactory` | [`src/PerpPoolFactory.sol`](src/PerpPoolFactory.sol) | 선물 풀 배포 |
 | `DexPositionManager` | [`src/DexPositionManager.sol`](src/DexPositionManager.sol) | LP 지분을 ERC-721 포지션으로 래핑 |
 | `DexRouter` | [`src/DexRouter.sol`](src/DexRouter.sol) | 멀티홉 스왑 + deadline (주변부, 무상태) |
 | `ProtocolTreasury` | [`src/ProtocolTreasury.sol`](src/ProtocolTreasury.sol) | 프로토콜 수수료 수취 (UUPS, 타임락 소유) |
 
-### 금고 인출
+### 권한 — 타임락 · Safe · guardian
 
-`ProtocolTreasury` 의 owner 는 Safe 가 아니라 **`TimelockController`** 입니다. Safe 가 인출을 큐에
-올리고 48시간 뒤 **누구나** 실행할 수 있습니다(검열 불가). guardian 은 그 사이 **취소**할 수 있어,
-키가 털려도 즉시 전액이 나가지 않습니다. 금고 업그레이드도 같은 지연을 거칩니다.
+`ProtocolTreasury` 와 `DexRegistry` 의 owner 는 둘 다 **`TimelockController`** 입니다. Safe 가 인출·업그레이드·
+팩토리 변경을 큐에 올리고 48시간 뒤 **누구나** 실행할 수 있습니다(검열 불가). guardian 은 그 사이 **취소**할 수
+있어, 키가 털려도 즉시 나가는 것이 없습니다.
 
-수수료는 급히 뺄 이유가 없으므로 지연 비용이 사실상 0인 반면, 정지는 즉시여야 하므로
-`DexRegistry` 의 owner 는 Safe 로 남습니다. 근거는 [`docs/DEX.md` §10](docs/DEX.md).
+즉시성이 본질인 재가동(`unpause`)과 guardian 지정은 레지스트리의 `emergencyAdmin`(Safe)이 바로 합니다.
+페어는 생성 시점의 팩토리를 고정하고 풀의 반환값 대신 잔고 변화로 체결을 검증하므로, 팩토리가 바뀌어도
+기존 페어의 에스크로에는 닿지 않습니다. 근거는 [`docs/DEX.md` §10](docs/DEX.md).
+
+guardian 키는 Safe 서명자와 달라야 하고(메인넷 배포가 거부), Safe 는 n-of-n 이 아닌 구성을 권장합니다.
 
 ### 비상 정지
 
 `DexRegistry.paused` 플래그 하나를 모든 풀·페어가 읽습니다. **진입만 막고 출구는 항상 열려 있습니다** —
 정지 중에도 유동성 인출·포지션 청산·주문 취소가 됩니다. 자금이 갇히지 않으므로 만료 타이머가 없습니다.
 
-- `pause()` — owner(Safe) 또는 guardian
-- `unpause()` — owner 전용
+- `pause()` — guardian, emergencyAdmin(Safe), owner(타임락)
+- `unpause()` — emergencyAdmin(Safe) 또는 owner
 - guardian 은 **멈추는 것만** 가능. `GUARDIAN_ADDRESS` 환경변수로 배포 시 설정(선택)
 
-청산도 정지 중 차단됩니다. 정지 사유가 대개 마크 가격 이상인데, 잘못된 마크로 도는 청산은
-되돌릴 수 없기 때문입니다. 자세한 근거는 [`docs/DEX.md` §8](docs/DEX.md) 참고.
+정지 중 선물 마크는 정지 직전 경계에서 동결되고, 감소·인출은 그 가격으로 계속 정산됩니다. 마진 추가는
+열려 있고 청산은 막힙니다(정지 사유가 대개 마크 이상이고, 잘못된 마크로 도는 청산은 되돌릴 수 없음).
+해제 후 한 창(5분+1분) 동안도 청산을 유예합니다. 자세한 근거는 [`docs/DEX.md` §8](docs/DEX.md) 참고.
+
+### 선물 — 요청 → 정산
+
+포지션 증감·마진 인출·LP 예치/인출은 모두 **요청 후 정산**입니다. 요청은 다음 에포크(60초) 경계에서 시작하는
+300초 창의 TWAP 으로 체결되고, 그 창이 닫힌 에포크 안에 누구나 `executeOrder` / `executeLp` 로 실행합니다
+(실행 수수료는 실행자 몫). 놓치면 다음 창으로 넘어가며 지금까지의 가격 중 요청자에게 불리한 쪽이 적용됩니다.
+포지션 요청은 취소할 수 없고(LP 요청은 창이 열리기 전에만), 증가 요청은 요청 시점에 사용률·오라클 깊이로
+승인·예약되며, 실행 때 실패하면 잡고 있던 용량에 대한 수수료(풀 개설 수수료, 최소 0.1%)를 마진에서 뗍니다.
+이미 아는 가격으로 금고와 거래하는 길을 막기 위한 구조입니다
+([`docs/DEX.md` §5.2.1](docs/DEX.md)). 마진 추가는 즉시입니다(대기 요청이 없는 쪽에 한해).
+보내지 못한 환불·지급은 `claimableQuote` 에 쌓이고 `claim` 으로 받습니다.
+새 시장은 오라클 풀에 가격이 생긴 뒤 1시간이 지나야 포지션을 받습니다. 오라클 깊이는 √k 조화평균이라, 오라클 풀의
+단독 LP 가 유동성을 뺐다 넣으면 1시간 동안 신규 포지션이 막힙니다 — 옮길 땐 새 유동성을 먼저 넣으세요.
+알려진 한계는 [§11](docs/DEX.md).
 
 수수료: 풀 생성자가 `lpFee`를 설정하고, 그중 0.1%가 `ProtocolTreasury`로, 나머지 99.9%가 LP에게 분배됩니다.
 
@@ -48,10 +66,10 @@ Series9 탈중앙화 거래소. ANY/ANY ERC-20 페어에 대한 AMM 현물 풀, 
 정규 티어를 누가 먼저 만들든 그 풀이 곧 그 티어의 정식 풀이라 아무나 유동성을
 넣고 라우팅할 수 있습니다 — 커스텀 슬롯이 전부 소진돼도 페어는 계속 쓸 수 있습니다.
 
-주문 가격은 페어별 `tickSize` 대신 **유효숫자 6자리 십진 그리드**를 씁니다.
-`Pair.priceIsValid(priceX18)` / `Pair.tickSizeAt(priceX18)` 로 조회합니다.
-비율 기준이라 토큰 데시멀 차이가 큰 페어에도 그대로 맞고, 선착순으로 고정되는
-페어 전역 값이 없습니다.
+주문 가격은 raw quote/raw base × 1e36 (`priceX36`)이고, 페어별 `tickSize` 대신 **유효숫자 6자리 십진
+그리드**를 씁니다. `Pair.priceIsValid(priceX36)` / `Pair.tickSizeAt(priceX36)` 로 조회합니다.
+비율 기준이라 토큰 데시멀 차이가 큰 페어에도 그대로 맞고, 선착순으로 고정되는 페어 전역 값이 없습니다.
+주문은 등록 즉시 매칭되고 남은 부분만 쉽니다. 매칭 중 보내지 못한 대금은 `claimable` 에 쌓이고 `claim` 으로 받습니다.
 
 ## 개발
 
@@ -87,9 +105,10 @@ forge script script/DeployDex.s.sol:DeployDex \
   --rpc-url "$MONAD_RPC_URL" --broadcast
 ```
 
-배포 스크립트는 ProtocolTreasury/DexRegistry 프록시와 팩토리·DexPositionManager·DexRouter를
-배포하고, 레지스트리에 연결한 뒤 소유권을 Safe로 이관합니다. 페어와 풀은 배포 대상이
-아니며 런타임에 `DexRegistry.createPair` / `Pair.createSpotPool` 로 만듭니다.
+배포 스크립트는 타임락, ProtocolTreasury/DexRegistry 프록시와 팩토리·DexPositionManager·DexRouter를
+배포하고, 레지스트리에 연결한 뒤 Safe 를 emergencyAdmin 으로, 레지스트리 소유권을 타임락으로 넘깁니다.
+페어와 풀은 배포 대상이 아니며 런타임에 `DexRegistry.createPair` / `Pair.createSpotPool` 로 만듭니다.
+팩토리는 `createPair` 전에 설정돼 있어야 합니다(페어가 그 값을 고정).
 
 ## GitHub Actions
 
@@ -127,8 +146,8 @@ required reviewer를 걸어두면 실제 배포가 수동 승인 뒤에만 나�
 안전장치:
 - RPC가 보고한 chain id가 대상 체인과 다르면 배포 전에 실패 (RPC 시크릿 오설정 방지)
 - 배포자 잔액 0 또는 `SAFE_ADDRESS == 배포자`면 배포 전에 실패
-- 배포 후 `registry`/`treasury` 소유권과 팩토리·주변부 배선을 온체인 조회로 대조,
-  하나라도 어긋나면 잡 실패 (풀과 페어는 배포 후 불변이라 재배포 외 복구 불가)
+- 배포 후 `registry`/`treasury` 소유권과 팩토리·주변부 배선, 타임락 지연과 역할(배포자는 admin·proposer·canceller
+  어느 것도 없어야 함)을 온체인 조회로 대조, 하나라도 어긋나면 잡 실패 (풀과 페어는 배포 후 불변이라 재배포 외 복구 불가)
 
 > 배포 워크플로는 **스택 전체를 새로 배포**합니다. 업그레이드가 아니라 신규 배포이므로
 > 이미 운영 중인 배포가 있으면 실행 전에 의도한 동작인지 확인하세요.
